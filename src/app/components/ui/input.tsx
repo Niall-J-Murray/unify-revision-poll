@@ -37,12 +37,14 @@ export default function Input({
 
   return (
     <div className="mb-4">
-      <label
-        htmlFor={id}
-        className="block text-sm font-medium mb-1 text-github-fg dark:text-github-dark-fg"
-      >
-        {label} {required && <span className="text-red-500 dark:text-red-400">*</span>}
-      </label>
+      {label && (
+        <label
+          htmlFor={id}
+          className="block text-sm font-medium mb-1 text-github-fg dark:text-github-dark-fg"
+        >
+          {label} {required && <span className="text-red-500 dark:text-red-400">*</span>}
+        </label>
+      )}
       <div className="relative">
         <input
           id={id}
@@ -52,11 +54,17 @@ export default function Input({
           onChange={onChange}
           required={required}
           placeholder={placeholder}
-          className={`w-full px-3 py-2 border ${
-            error ? "border-red-300 dark:border-red-700" : "border-github-border dark:border-github-dark-border"
-          } bg-github-bg dark:bg-github-dark-bg text-github-fg dark:text-github-dark-fg rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-github-primary dark:focus:ring-github-dark-primary focus:border-github-primary dark:focus:border-github-dark-primary transition-colors ${
-            type === "password" ? "pr-10" : ""
-          }`}
+          className={`
+            w-full px-3 py-2 
+            bg-white dark:bg-github-dark-bg
+            text-gray-900 dark:text-white
+            border border-github-border dark:border-github-dark-border 
+            rounded-md
+            focus:outline-none focus:ring-2 
+            focus:ring-github-primary dark:focus:ring-github-dark-accent
+            placeholder:text-gray-400 dark:placeholder:text-gray-500
+            ${error ? 'border-red-500 dark:border-red-500' : ''}
+          `}
         />
         {type === "password" && (
           <button

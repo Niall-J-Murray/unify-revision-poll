@@ -10,6 +10,7 @@ import {
   FiX,
   FiMoon,
   FiSun,
+  FiList,
 } from "react-icons/fi";
 import { useTheme } from "@/context/theme-context";
 
@@ -104,7 +105,7 @@ export default function DashboardLayout({
           {/* Logo */}
           <div className="p-6 border-b border-github-border dark:border-github-dark-border">
             <h2 className="text-2xl font-bold text-github-primary dark:text-github-dark-primary">
-              SecureAuth
+              Unify Poll
             </h2>
           </div>
 
@@ -119,11 +120,11 @@ export default function DashboardLayout({
             </Link>
 
             <Link
-              href="/profile"
+              href="/feature-requests"
               className="flex items-center space-x-3 p-3 rounded-md hover:bg-github-hover dark:hover:bg-github-dark-hover"
             >
-              <FiUser className="h-5 w-5" />
-              <span>Profile</span>
+              <FiList className="h-5 w-5" />
+              <span>Feature Requests</span>
             </Link>
 
             {/* Admin link (conditional) */}
@@ -137,6 +138,24 @@ export default function DashboardLayout({
               </Link>
             )}
           </nav>
+
+          {/* Profile Section - Now at the bottom */}
+          <div className="p-4 border-t border-github-border dark:border-github-dark-border mt-auto">
+            <Link
+              href="/profile"
+              className="flex items-center space-x-3 p-3 rounded-md hover:bg-github-hover dark:hover:bg-github-dark-hover"
+            >
+              <FiUser className="h-5 w-5" />
+              <span>Profile</span>
+            </Link>
+            <button
+              onClick={handleSignOut}
+              className="w-full mt-2 flex items-center space-x-3 p-3 rounded-md hover:bg-github-hover dark:hover:bg-github-dark-hover text-red-600 dark:text-red-400"
+            >
+              <FiLogOut className="h-5 w-5" />
+              <span>Sign out</span>
+            </button>
+          </div>
         </div>
       </div>
 

@@ -15,19 +15,28 @@ module.exports = {
           bg: '#ffffff',
           fg: '#24292f',
           border: '#d0d7de',
-          primary: '#1a56db', // Royal blue shade
-          secondary: '#6e7781',
-          accent: '#1a56db', // Royal blue shade
-          hover: '#f6f8fa',
+          primary: '#0969DA', // Darker blue
+          secondary: '#57606a',
+          accent: '#DAA520', // Dark yellow accent
+          hover: '#f3f4f6',
           
           // Dark mode
           'dark-bg': '#0d1117',
           'dark-fg': '#c9d1d9',
           'dark-border': '#30363d',
-          'dark-primary': '#4d7eff', // Royal blue shade for dark mode
+          'dark-primary': '#1F6FEB', // Darker blue for dark mode
           'dark-secondary': '#8b949e',
-          'dark-accent': '#2563eb', // Royal blue shade for dark mode
+          'dark-accent': '#B8860B', // Darker yellow accent for dark mode
           'dark-hover': '#161b22',
+        },
+        'github-dark': {
+          'primary': '#1F6FEB', // Darker blue for dark mode
+          'secondary': '#8b949e',
+          'hover': '#161b22',
+          'border': '#30363d',
+          'bg': '#0d1117',
+          'fg': '#c9d1d9',
+          'accent': '#B8860B', // Darker yellow accent for dark mode
         },
       },
     },

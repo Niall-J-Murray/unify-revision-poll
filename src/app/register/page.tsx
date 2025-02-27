@@ -128,7 +128,7 @@ export default function Register() {
   return (
     <AuthLayout
       title="Create an account"
-      subtitle="Sign up to get started with SecureAuth"
+      subtitle="Sign up to get started with Unify Poll"
     >
       {generalError && (
         <div className="mb-4 p-3 bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400 rounded-lg border border-red-200 dark:border-red-800/30 text-sm flex items-start">

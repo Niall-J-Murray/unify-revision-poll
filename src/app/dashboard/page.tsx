@@ -19,9 +19,12 @@ export default function Dashboard() {
     createdAt?: string;
     emailVerified?: Date | null;
     role?: string;
+    voteCount?: number;
+    featureRequestCount?: number;
   } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [activities, setActivities] = useState([]);
 
   useEffect(() => {
     const fetchUserData = async () => {
@@ -30,7 +33,38 @@ export default function Dashboard() {
         const data = await response.json();
 
         if (response.ok) {
-          setUserData(data.user);
+          // Fetch the number of votes for the user
+          const votesResponse = await fetch(`/api/user/${data.user.id}/votes`);
+          const votesData = await votesResponse.json();
+
+          // Fetch the number of feature requests for the user
+          const featureRequestCountResponse = await fetch(`/api/user/${data.user.id}/feature-requests/count`);
+          const featureRequestCountData = await featureRequestCountResponse.json();
+
+          if (votesResponse.ok && featureRequestCountResponse.ok) {
+            setUserData({
+              ...data.user,
+              voteCount: votesData.count,
+              featureRequestCount: featureRequestCountData.count,
+            });
+          } else {
+            if (!votesResponse.ok) {
+              console.error("Failed to load user votes");
+            }
+            if (!featureRequestCountResponse.ok) {
+              console.error("Failed to load feature request count");
+            }
+          }
+
+          // Fetch user activity
+          const activityResponse = await fetch(`/api/user/${data.user.id}/activity`);
+          const activityData = await activityResponse.json();
+
+          if (activityResponse.ok) {
+            setActivities(activityData);
+          } else {
+            console.error(activityData.message || "Failed to load user activity");
+          }
         } else {
           setError(data.message || "Failed to load user data");
         }
@@ -66,24 +100,28 @@ export default function Dashboard() {
     <DashboardLayout title="Dashboard">
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         {/* Welcome Card */}
-        <div className="md:col-span-2 bg-github-bg dark:bg-github-dark-hover rounded-lg shadow-sm border border-github-border dark:border-github-dark-border p-6">
+        <div className="md:col-span-2 bg-github-bg dark:bg-github-dark-hover rounded-lg shadow-sm border border-github-border dark:border-github-dark-border p-6 h-full">
           <h2 className="text-xl font-semibold mb-4">
             Welcome, {displayName}!
           </h2>
+          <p className="text-github-secondary dark:text-github-dark-secondary mb-2">
+            This application allows you to manage feature requests effectively. You can create new requests, vote on existing ones, and track their status.
+          </p>
+          <p className="text-github-secondary dark:text-github-dark-secondary mb-2">
+            Click the "Feature Requests" button on the left to view, vote, or create new feature requests.
+          </p>
           <p className="text-github-secondary dark:text-github-dark-secondary">
-            This is your secure authentication dashboard. Here you can see your
-            account information and recent activity.
+            Use the navigation to explore requests, filter by status, and see your voting history. Your feedback helps improve the application!
           </p>
         </div>
 
         {/* User Info Card */}
         <div className="bg-github-bg dark:bg-github-dark-hover rounded-lg shadow-sm border border-github-border dark:border-github-dark-border p-6">
-          <h3 className="text-lg font-medium mb-4">Account Information</h3>
+          <h3 className="text-lg font-medium mb-4">Account Summary</h3>
           {loading ? (
             <div className="animate-pulse space-y-4">
               <div className="h-4 bg-github-border dark:bg-github-dark-border rounded w-3/4"></div>
               <div className="h-4 bg-github-border dark:bg-github-dark-border rounded w-1/2"></div>
-              <div className="h-4 bg-github-border dark:bg-github-dark-border rounded w-5/6"></div>
             </div>
           ) : error ? (
             <div className="text-red-600 dark:text-red-400">{error}</div>
@@ -99,50 +137,28 @@ export default function Dashboard() {
                 </div>
               </div>
               <div className="flex items-start">
-                <FiMail className="mt-1 mr-2 text-github-secondary dark:text-github-dark-secondary" />
+                <FiActivity className="mt-1 mr-2 text-github-secondary dark:text-github-dark-secondary" />
                 <div>
                   <p className="text-sm text-github-secondary dark:text-github-dark-secondary">
-                    Email
+                    Votes
                   </p>
-                  <p className="font-medium">{userData?.email}</p>
-                  <p className="text-xs mt-1">
-                    {emailVerified ? (
-                      <span className="text-green-600 dark:text-green-400">
-                        Verified
-                      </span>
-                    ) : (
-                      <span className="text-red-600 dark:text-red-400">
-                        Not verified
-                      </span>
-                    )}
-                  </p>
+                  <p className="font-medium">{userData?.voteCount || 0}</p>
                 </div>
               </div>
               <div className="flex items-start">
-                <FiCalendar className="mt-1 mr-2 text-github-secondary dark:text-github-dark-secondary" />
+                <FiActivity className="mt-1 mr-2 text-github-secondary dark:text-github-dark-secondary" />
                 <div>
                   <p className="text-sm text-github-secondary dark:text-github-dark-secondary">
-                    Joined
+                    Feature Requests
                   </p>
-                  <p className="font-medium">{joinDate}</p>
-                </div>
-              </div>
-              <div className="flex items-start">
-                <FiShield className="mt-1 mr-2 text-github-secondary dark:text-github-dark-secondary" />
-                <div>
-                  <p className="text-sm text-github-secondary dark:text-github-dark-secondary">
-                    Role
-                  </p>
-                  <p className="font-medium capitalize">
-                    {userData?.role?.toLowerCase() || "User"}
-                  </p>
+                  <p className="font-medium">{userData?.featureRequestCount || 0}</p>
                 </div>
               </div>
             </div>
           )}
         </div>
 
-        {/* Activity Card - Replacing Profile Card */}
+        {/* Activity Card */}
         <div className="md:col-span-3 bg-github-bg dark:bg-github-dark-hover rounded-lg shadow-sm border border-github-border dark:border-github-dark-border p-6">
           <h3 className="text-lg font-medium mb-4 flex items-center">
             <FiActivity className="mr-2" />
@@ -157,55 +173,33 @@ export default function Dashboard() {
             </div>
           ) : (
             <div className="space-y-4">
-              <div className="border-l-2 border-github-primary dark:border-github-dark-primary pl-4 py-2">
-                <div className="flex items-center text-sm text-github-secondary dark:text-github-dark-secondary mb-1">
-                  <FiClock className="mr-2" />
-                  <span>Today</span>
-                </div>
-                <p className="text-github-fg dark:text-github-dark-fg">
-                  Logged in to your account
-                </p>
-              </div>
-
-              {emailVerified ? (
-                <div className="border-l-2 border-green-500 dark:border-green-400 pl-4 py-2">
-                  <div className="flex items-center text-sm text-github-secondary dark:text-github-dark-secondary mb-1">
-                    <FiClock className="mr-2" />
-                    <span>Account Status</span>
-                  </div>
-                  <p className="text-github-fg dark:text-github-dark-fg">
-                    Email verified successfully
-                  </p>
-                </div>
+              {activities.length === 0 ? (
+                <p className="text-gray-500 dark:text-gray-400">No recent activity found.</p>
               ) : (
-                <div className="border-l-2 border-yellow-500 dark:border-yellow-400 pl-4 py-2">
-                  <div className="flex items-center text-sm text-github-secondary dark:text-github-dark-secondary mb-1">
-                    <FiClock className="mr-2" />
-                    <span>Action Required</span>
+                activities.map((activity) => (
+                  <div key={activity.id} className="border-l-2 border-github-primary dark:border-github-dark-primary pl-4 py-2">
+                    <div className="flex items-center text-sm text-github-secondary dark:text-github-dark-secondary mb-1">
+                      <FiClock className="mr-2" />
+                      <span>{new Date(activity.createdAt).toLocaleDateString()}</span>
+                    </div>
+                    <p className="text-github-fg dark:text-github-dark-fg">
+                      {activity.type === 'created' ? (
+                        `Created feature request: ${activity.featureRequest.title}`
+                      ) : activity.type === 'voted' ? (
+                        `Voted for feature request: ${activity.featureRequest.title}`
+                      ) : activity.type === 'unvoted' ? (
+                        `Removed vote from feature request: ${activity.featureRequest.title}`
+                      ) : activity.type === 'edited' ? (
+                        `Edited feature request: ${activity.featureRequest.title}`
+                      ) : activity.type === 'deleted' ? (
+                        `Deleted feature request: ${activity.deletedRequestTitle}`
+                      ) : (
+                        `Status changed for feature request: ${activity.featureRequest.title}`
+                      )}
+                    </p>
                   </div>
-                  <p className="text-github-fg dark:text-github-dark-fg">
-                    Please verify your email address
-                  </p>
-                  <p className="text-sm mt-1">
-                    <Link
-                      href="/profile"
-                      className="text-github-primary dark:text-github-dark-primary hover:underline"
-                    >
-                      Resend verification email
-                    </Link>
-                  </p>
-                </div>
+                ))
               )}
-
-              <div className="border-l-2 border-github-border dark:border-github-dark-border pl-4 py-2">
-                <div className="flex items-center text-sm text-github-secondary dark:text-github-dark-secondary mb-1">
-                  <FiClock className="mr-2" />
-                  <span>{joinDate}</span>
-                </div>
-                <p className="text-github-fg dark:text-github-dark-fg">
-                  Account created
-                </p>
-              </div>
             </div>
           )}
         </div>

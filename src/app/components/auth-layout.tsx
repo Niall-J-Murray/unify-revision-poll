@@ -22,22 +22,22 @@ export default function AuthLayout({
         <div>
           {showLogo && (
             <div className="mb-8">
-              <h1 className="text-3xl font-bold">SecureAuth</h1>
-              <p className="text-blue-100 mt-2">Your trusted authentication solution</p>
+              <h1 className="text-3xl font-bold">Unify Poll</h1>
+              <p className="text-blue-100 mt-2">Your trusted polling platform</p>
             </div>
           )}
           
           <div className="mt-12">
-            <h2 className="text-4xl font-bold mb-6">Secure, Simple, Seamless</h2>
+            <h2 className="text-4xl font-bold mb-6">Simple, Secure, Seamless</h2>
             <p className="text-xl text-blue-100">
-              Experience the most reliable authentication system with advanced security features.
+              Experience the most reliable polling system with advanced security features.
             </p>
           </div>
         </div>
         
         <div className="mt-auto">
           <p className="text-blue-100">
-            © {new Date().getFullYear()} SecureAuth. All rights reserved.
+            © {new Date().getFullYear()} niallmurray.me. All rights reserved.
           </p>
         </div>
       </div>
@@ -48,7 +48,7 @@ export default function AuthLayout({
           {/* Mobile logo */}
           <div className="md:hidden text-center mb-8">
             {showLogo && (
-              <h1 className="text-2xl font-bold text-github-primary dark:text-github-dark-primary">SecureAuth</h1>
+              <h1 className="text-2xl font-bold text-github-primary dark:text-github-dark-primary">Unify Poll</h1>
             )}
           </div>
           

@@ -3,7 +3,13 @@
 import Link from "next/link";
 import { useSession } from "next-auth/react";
 import { useTheme } from "@/context/theme-context";
-import { FiMoon, FiSun } from "react-icons/fi";
+import {
+  FiMoon,
+  FiSun,
+  FiCheckCircle,
+  FiUsers,
+  FiTrendingUp,
+} from "react-icons/fi";
 
 export default function Home() {
   const { data: session, status } = useSession();
@@ -17,7 +23,9 @@ export default function Home() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between items-center py-6">
             <div className="flex items-center">
-              <h1 className="text-2xl font-bold text-github-primary dark:text-github-dark-primary">SecureAuth</h1>
+              <h1 className="text-2xl font-bold text-github-primary dark:text-github-dark-primary">
+                Unify Poll
+              </h1>
             </div>
             <div className="flex items-center space-x-4">
               <button
@@ -25,13 +33,13 @@ export default function Home() {
                 className="p-2 rounded-md hover:bg-github-hover dark:hover:bg-github-dark-hover"
                 aria-label="Toggle theme"
               >
-                {theme === 'dark' ? (
+                {theme === "dark" ? (
                   <FiSun className="h-5 w-5" />
                 ) : (
                   <FiMoon className="h-5 w-5" />
                 )}
               </button>
-              
+
               {isAuthenticated ? (
                 <Link
                   href="/dashboard"
@@ -42,7 +50,7 @@ export default function Home() {
               ) : (
                 <>
                   <Link
-                    href="/login"
+                    href="/api/auth/signin"
                     className="px-4 py-2 border border-github-border dark:border-github-dark-border rounded-md text-sm font-medium hover:bg-github-hover dark:hover:bg-github-dark-hover transition-colors"
                   >
                     Sign in
@@ -51,7 +59,7 @@ export default function Home() {
                     href="/register"
                     className="px-4 py-2 bg-github-primary dark:bg-github-dark-accent border border-transparent rounded-md text-sm font-medium text-white hover:bg-opacity-90 transition-colors"
                   >
-                    Sign up
+                    Register
                   </Link>
                 </>
               )}
@@ -60,53 +68,120 @@ export default function Home() {
         </div>
       </header>
 
-      {/* Hero section */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16 md:py-24">
+      {/* Hero Section */}
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-20 pb-16">
         <div className="text-center">
-          <h1 className="text-4xl md:text-5xl lg:text-6xl font-bold mb-6">
-            Secure Authentication for Modern Applications
+          <h1 className="text-4xl font-bold text-github-fg dark:text-github-dark-fg sm:text-5xl md:text-6xl">
+            Unify Feature Requests
           </h1>
-          <p className="text-xl md:text-2xl text-github-secondary dark:text-github-dark-secondary max-w-3xl mx-auto mb-10">
-            A complete authentication solution with email verification, password reset, and role-based access control.
+          <p className="mt-3 max-w-md mx-auto text-xl text-github-secondary dark:text-github-dark-secondary sm:text-2xl md:mt-5 md:max-w-3xl">
+            Shape the future of Unify's ordering software by requesting and
+            voting on new features.
           </p>
-          <div className="flex flex-col sm:flex-row justify-center gap-4">
-            <Link
-              href="/register"
-              className="px-6 py-3 bg-github-primary dark:bg-github-dark-accent text-white rounded-md text-lg font-medium hover:bg-opacity-90 transition-colors"
-            >
-              Get Started
-            </Link>
-            <Link
-              href="/login"
-              className="px-6 py-3 bg-github-hover dark:bg-github-dark-hover rounded-md text-lg font-medium hover:bg-github-border dark:hover:bg-github-dark-border transition-colors"
-            >
-              Sign In
-            </Link>
+          {!isAuthenticated && (
+            <div className="mt-10 flex justify-center gap-4">
+              <Link
+                href="/api/auth/signin"
+                className="px-8 py-3 border border-transparent text-base font-medium rounded-md text-white bg-github-primary dark:bg-github-dark-primary hover:bg-opacity-90"
+              >
+                Sign in to share your ideas!
+              </Link>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Features Section */}
+      <div className="py-16 bg-github-hover dark:bg-github-dark-hover">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="grid grid-cols-1 gap-8 md:grid-cols-3">
+            {/* Request Features */}
+            <div className="text-center">
+              <div className="flex justify-center">
+                <FiCheckCircle className="h-12 w-12 text-github-primary dark:text-github-dark-primary" />
+              </div>
+              <h3 className="mt-4 text-xl font-semibold text-github-fg dark:text-github-dark-fg">
+                Request Features
+              </h3>
+              <p className="mt-2 text-github-secondary dark:text-github-dark-secondary">
+                Submit your ideas for improving the Unify ordering software.
+                Whether it's enhancing order management, inventory control, or
+                reporting capabilities.
+              </p>
+            </div>
+
+            {/* Vote and Prioritize */}
+            <div className="text-center">
+              <div className="flex justify-center">
+                <FiTrendingUp className="h-12 w-12 text-github-primary dark:text-github-dark-primary" />
+              </div>
+              <h3 className="mt-4 text-xl font-semibold text-github-fg dark:text-github-dark-fg">
+                Vote and Prioritize
+              </h3>
+              <p className="mt-2 text-github-secondary dark:text-github-dark-secondary">
+                Vote on feature requests to help prioritize development. Your
+                input directly influences which improvements are implemented
+                first.
+              </p>
+            </div>
+
+            {/* Track Progress */}
+            <div className="text-center">
+              <div className="flex justify-center">
+                <FiUsers className="h-12 w-12 text-github-primary dark:text-github-dark-primary" />
+              </div>
+              <h3 className="mt-4 text-xl font-semibold text-github-fg dark:text-github-dark-fg">
+                Track Progress
+              </h3>
+              <p className="mt-2 text-github-secondary dark:text-github-dark-secondary">
+                Stay updated on the status of requested features. Monitor as
+                they move from proposal to implementation in Unify.
+              </p>
+            </div>
           </div>
         </div>
       </div>
 
-      {/* Features section */}
-      <div className="bg-github-hover dark:bg-github-dark-hover py-16">
+      {/* How It Works Section */}
+      <div className="py-16">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <h2 className="text-3xl font-bold text-center mb-12">Key Features</h2>
-          <div className="grid md:grid-cols-3 gap-8">
-            <div className="bg-github-bg dark:bg-github-dark-bg p-6 rounded-lg shadow-sm border border-github-border dark:border-github-dark-border">
-              <h3 className="text-xl font-semibold mb-3">Secure Authentication</h3>
+          <h2 className="text-3xl font-bold text-center text-github-fg dark:text-github-dark-fg mb-12">
+            How It Works
+          </h2>
+          <div className="grid grid-cols-1 gap-8 md:grid-cols-2 lg:grid-cols-4">
+            <div className="relative">
+              <div className="text-xl font-bold text-github-primary dark:text-github-dark-primary mb-2">
+                1. Sign In
+              </div>
               <p className="text-github-secondary dark:text-github-dark-secondary">
-                Industry-standard security practices with password hashing and protection against common vulnerabilities.
+                Sign in to access the feature request platform.
               </p>
             </div>
-            <div className="bg-github-bg dark:bg-github-dark-bg p-6 rounded-lg shadow-sm border border-github-border dark:border-github-dark-border">
-              <h3 className="text-xl font-semibold mb-3">Email Verification</h3>
+            <div>
+              <div className="text-xl font-bold text-github-primary dark:text-github-dark-primary mb-2">
+                2. Submit Requests
+              </div>
               <p className="text-github-secondary dark:text-github-dark-secondary">
-                Verify user emails to ensure account security and reduce spam registrations.
+                Create detailed feature requests for improvements you'd like to
+                see in Unify.
               </p>
             </div>
-            <div className="bg-github-bg dark:bg-github-dark-bg p-6 rounded-lg shadow-sm border border-github-border dark:border-github-dark-border">
-              <h3 className="text-xl font-semibold mb-3">Password Recovery</h3>
+            <div>
+              <div className="text-xl font-bold text-github-primary dark:text-github-dark-primary mb-2">
+                3. Vote & Discuss
+              </div>
               <p className="text-github-secondary dark:text-github-dark-secondary">
-                Simple and secure password reset flow for users who forget their credentials.
+                Vote on existing requests and engage in discussions about
+                proposed features.
+              </p>
+            </div>
+            <div>
+              <div className="text-xl font-bold text-github-primary dark:text-github-dark-primary mb-2">
+                4. Stay Updated
+              </div>
+              <p className="text-github-secondary dark:text-github-dark-secondary">
+                Track the progress of approved features as they're implemented
+                into Unify.
               </p>
             </div>
           </div>
@@ -119,17 +194,27 @@ export default function Home() {
           <div className="flex flex-col md:flex-row justify-between items-center">
             <div className="mb-4 md:mb-0">
               <p className="text-github-secondary dark:text-github-dark-secondary">
-                © {new Date().getFullYear()} SecureAuth. All rights reserved.
+                © {new Date().getFullYear()} niallmurray.me. All rights
+                reserved.
               </p>
             </div>
             <div className="flex space-x-6">
-              <a href="#" className="text-github-secondary dark:text-github-dark-secondary hover:text-github-primary dark:hover:text-github-dark-primary">
+              <a
+                href="#"
+                className="text-github-secondary dark:text-github-dark-secondary hover:text-github-primary dark:hover:text-github-dark-primary"
+              >
                 Terms
               </a>
-              <a href="#" className="text-github-secondary dark:text-github-dark-secondary hover:text-github-primary dark:hover:text-github-dark-primary">
+              <a
+                href="#"
+                className="text-github-secondary dark:text-github-dark-secondary hover:text-github-primary dark:hover:text-github-dark-primary"
+              >
                 Privacy
               </a>
-              <a href="#" className="text-github-secondary dark:text-github-dark-secondary hover:text-github-primary dark:hover:text-github-dark-primary">
+              <a
+                href="#"
+                className="text-github-secondary dark:text-github-dark-secondary hover:text-github-primary dark:hover:text-github-dark-primary"
+              >
                 Contact
               </a>
             </div>
