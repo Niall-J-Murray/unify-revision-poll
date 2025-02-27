@@ -12,7 +12,7 @@ import {
 } from "react-icons/fi";
 
 export default function Home() {
-  const { data: session, status } = useSession();
+  const { status } = useSession();
   const isAuthenticated = status === "authenticated";
   const { theme, toggleTheme } = useTheme();
 
@@ -75,7 +75,7 @@ export default function Home() {
             Unify Feature Requests
           </h1>
           <p className="mt-3 max-w-md mx-auto text-xl text-github-secondary dark:text-github-dark-secondary sm:text-2xl md:mt-5 md:max-w-3xl">
-            Shape the future of Unify's ordering software by requesting and
+            Shape the future of Unify&apos;s ordering software by requesting and
             voting on new features.
           </p>
           {!isAuthenticated && (
@@ -105,8 +105,8 @@ export default function Home() {
               </h3>
               <p className="mt-2 text-github-secondary dark:text-github-dark-secondary">
                 Submit your ideas for improving the Unify ordering software.
-                Whether it's enhancing order management, inventory control, or
-                reporting capabilities.
+                Whether it&apos;s enhancing order management, inventory control,
+                or reporting capabilities.
               </p>
             </div>
 
@@ -162,8 +162,8 @@ export default function Home() {
                 2. Submit Requests
               </div>
               <p className="text-github-secondary dark:text-github-dark-secondary">
-                Create detailed feature requests for improvements you'd like to
-                see in Unify.
+                Create detailed feature requests for improvements you&apos;d
+                like to see in Unify.
               </p>
             </div>
             <div>
@@ -180,8 +180,8 @@ export default function Home() {
                 4. Stay Updated
               </div>
               <p className="text-github-secondary dark:text-github-dark-secondary">
-                Track the progress of approved features as they're implemented
-                into Unify.
+                Track the progress of approved features as they&apos;re
+                implemented into Unify.
               </p>
             </div>
           </div>

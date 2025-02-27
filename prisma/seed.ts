@@ -156,7 +156,7 @@ async function main() {
     const voters = shuffledUsers.slice(0, voterCount);
 
     for (const voter of voters) {
-      const vote = await prisma.vote.upsert({
+      await prisma.vote.upsert({
         where: {
           userId_featureRequestId: {
             userId: voter.id,
