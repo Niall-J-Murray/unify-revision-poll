@@ -67,8 +67,9 @@ export default function EditProfile() {
       setTimeout(() => {
         router.push("/profile");
       }, 2000);
-    } catch (err: any) {
-      setError(err.message || "An error occurred");
+    } catch (err: unknown) {
+      const error = err instanceof Error ? err.message : "An error occurred";
+      setError(error);
     } finally {
       setLoading(false);
     }

@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useSession } from "next-auth/react";
 import Link from "next/link";
 import DashboardLayout from "@/app/components/dashboard-layout";
 import {
@@ -9,15 +8,18 @@ import {
   FiMail,
   FiCalendar,
   FiShield,
-  FiCheck,
-  FiX,
   FiActivity,
   FiClock,
 } from "react-icons/fi";
 
 export default function Dashboard() {
-  const { data: session } = useSession();
-  const [userData, setUserData] = useState<any>(null);
+  const [userData, setUserData] = useState<{
+    name?: string;
+    email?: string;
+    createdAt?: string;
+    emailVerified?: Date | null;
+    role?: string;
+  } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 

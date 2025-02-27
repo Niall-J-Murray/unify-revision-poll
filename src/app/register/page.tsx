@@ -117,8 +117,9 @@ export default function Register() {
       setTimeout(() => {
         router.push("/login?registered=true");
       }, 1500);
-    } catch (err: any) {
-      setGeneralError(err.message || "Registration failed");
+    } catch (err: unknown) {
+      const error = err instanceof Error ? err.message : "Registration failed";
+      setGeneralError(error);
     } finally {
       setLoading(false);
     }

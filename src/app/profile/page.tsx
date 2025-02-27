@@ -133,7 +133,8 @@ export default function Profile() {
       } else {
         setError(data.message || "Failed to update profile");
       }
-    } catch (err) {
+    } catch (err: unknown) {
+      const error = err instanceof Error ? err.message : "An error occurred";
       setError("An error occurred while updating your profile");
     } finally {
       setUpdating(false);
@@ -184,7 +185,8 @@ export default function Profile() {
       } else {
         setError(data.message || "Failed to change password");
       }
-    } catch (err) {
+    } catch (err: unknown) {
+      const error = err instanceof Error ? err.message : "An error occurred";
       setError("An error occurred while changing your password");
     } finally {
       setUpdating(false);
@@ -215,7 +217,8 @@ export default function Profile() {
       } else {
         setError(data.message || "Failed to delete account");
       }
-    } catch (err) {
+    } catch (err: unknown) {
+      const error = err instanceof Error ? err.message : "An error occurred";
       setError("An error occurred while deleting your account");
     } finally {
       setUpdating(false);
@@ -241,7 +244,8 @@ export default function Profile() {
       } else {
         setError(data.message || "Failed to resend verification email");
       }
-    } catch (err) {
+    } catch (err: unknown) {
+      const error = err instanceof Error ? err.message : "An error occurred";
       setError("An error occurred while sending verification email");
     } finally {
       setUpdating(false);

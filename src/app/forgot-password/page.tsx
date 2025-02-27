@@ -32,16 +32,17 @@ export default function ForgotPassword() {
       }
 
       setSuccess(true);
-    } catch (err: any) {
-      setError(err.message || "An error occurred");
+    } catch (err: unknown) {
+      const error = err instanceof Error ? err.message : "An error occurred";
+      setError(error);
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <AuthLayout 
-      title="Reset your password" 
+    <AuthLayout
+      title="Reset your password"
       subtitle="Enter your email address and we'll send you a link to reset your password"
     >
       {error && (
@@ -53,7 +54,8 @@ export default function ForgotPassword() {
       {success ? (
         <div className="text-center">
           <div className="mb-4 p-3 bg-green-50 text-green-700 rounded-lg border border-green-200 text-sm">
-            If an account exists with that email, we've sent password reset instructions.
+            If an account exists with that email, we&apos;ve sent password reset
+            instructions.
           </div>
           <Link
             href="/login"
@@ -85,7 +87,10 @@ export default function ForgotPassword() {
           <div className="mt-6 text-center">
             <p className="text-sm text-gray-600">
               Remember your password?{" "}
-              <Link href="/login" className="font-medium text-blue-600 hover:text-blue-500">
+              <Link
+                href="/login"
+                className="font-medium text-blue-600 hover:text-blue-500"
+              >
                 Sign in
               </Link>
             </p>
@@ -94,4 +99,4 @@ export default function ForgotPassword() {
       )}
     </AuthLayout>
   );
-} 
+}
