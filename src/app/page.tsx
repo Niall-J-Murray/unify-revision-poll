@@ -105,8 +105,8 @@ export default function Home() {
               </h3>
               <p className="mt-2 text-github-secondary dark:text-github-dark-secondary">
                 Submit your ideas for improving the Unify ordering software.
-                Whether it&apos;s enhancing order management, inventory control,
-                or reporting capabilities.
+                Whether it&apos;s enhancing order management, inventory control, or
+                reporting capabilities.
               </p>
             </div>
 
@@ -162,8 +162,8 @@ export default function Home() {
                 2. Submit Requests
               </div>
               <p className="text-github-secondary dark:text-github-dark-secondary">
-                Create detailed feature requests for improvements you&apos;d
-                like to see in Unify.
+                Create detailed feature requests for improvements you'd like to
+                see in Unify.
               </p>
             </div>
             <div>
@@ -180,8 +180,8 @@ export default function Home() {
                 4. Stay Updated
               </div>
               <p className="text-github-secondary dark:text-github-dark-secondary">
-                Track the progress of approved features as they&apos;re
-                implemented into Unify.
+                Track the progress of approved features as they're implemented
+                into Unify.
               </p>
             </div>
           </div>

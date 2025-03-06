@@ -230,7 +230,10 @@ export default function Login() {
                   type="button"
                   className="w-full inline-flex justify-center py-2.5 px-4 border border-github-border dark:border-github-dark-border rounded-md shadow-sm bg-github-bg dark:bg-github-dark-bg text-sm font-medium text-github-fg dark:text-github-dark-fg hover:bg-github-hover dark:hover:bg-github-dark-hover"
                   onClick={() =>
-                    signIn("google", { callbackUrl: "/dashboard" })
+                    signIn("google", {
+                      callbackUrl: "/dashboard",
+                      prompt: "select_account",
+                    })
                   }
                 >
                   <FaGoogle className="h-5 w-5 text-red-500" />
@@ -240,7 +243,10 @@ export default function Login() {
                   type="button"
                   className="w-full inline-flex justify-center py-2.5 px-4 border border-github-border dark:border-github-dark-border rounded-md shadow-sm bg-github-bg dark:bg-github-dark-bg text-sm font-medium text-github-fg dark:text-github-dark-fg hover:bg-github-hover dark:hover:bg-github-dark-hover"
                   onClick={() =>
-                    signIn("github", { callbackUrl: "/dashboard" })
+                    signIn("github", {
+                      callbackUrl: "/dashboard",
+                      prompt: "consent",
+                    })
                   }
                 >
                   <FaGithub className="h-5 w-5" />

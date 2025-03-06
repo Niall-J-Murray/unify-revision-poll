@@ -81,9 +81,9 @@ model FeatureRequest {
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
   status      String     @default("OPEN")
-  userId      String
+  userId      String?
   activities  Activity[]
-  user        User       @relation(fields: [userId], references: [id])
+  user        User?      @relation(fields: [userId], references: [id])
   votes       Vote[]
 
   @@unique([title, userId])
@@ -93,12 +93,12 @@ model FeatureRequest {
 model Vote {
   id               String         @id @default(cuid())
   createdAt        DateTime       @default(now())
-  userId           String
+  userId           String?
   featureRequestId String
   activityId       String?
   activity         Activity?      @relation(fields: [activityId], references: [id])
   featureRequest   FeatureRequest @relation(fields: [featureRequestId], references: [id])
-  user             User           @relation(fields: [userId], references: [id])
+  user             User?          @relation(fields: [userId], references: [id])
 
   @@unique([userId, featureRequestId])
   @@map("votes")
