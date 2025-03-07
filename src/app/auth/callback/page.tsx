@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Loading from "@/app/components/ui/loading";
 
-export default function AuthCallback() {
+function AuthCallbackContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -15,17 +15,17 @@ export default function AuthCallback() {
         // Extract tokens from URL hash
         const hash = window.location.hash.substring(1);
         const params = new URLSearchParams(hash);
-        
+
         // Get access token and other params
         const accessToken = params.get("access_token");
         const refreshToken = params.get("refresh_token");
         const type = params.get("type");
-        
+
         if (accessToken) {
           // Store tokens securely (consider using cookies or secure storage)
           // For example purposes only - in production use secure methods
           sessionStorage.setItem("access_token", accessToken);
-          
+
           // Redirect based on auth type
           if (type === "signup") {
             router.push("/dashboard?welcome=true");
@@ -46,4 +46,12 @@ export default function AuthCallback() {
   }, [router]);
 
   return <Loading message="Completing authentication..." />;
-} 
+}
+
+export default function AuthCallback() {
+  return (
+    <Suspense fallback={<Loading message="Loading authentication..." />}>
+      <AuthCallbackContent />
+    </Suspense>
+  );
+}
