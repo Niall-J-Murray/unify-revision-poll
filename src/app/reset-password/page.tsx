@@ -1,12 +1,13 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import Input from "@/app/components/ui/input";
 import AuthLayout from "@/app/components/auth-layout";
+import Loading from "@/app/components/ui/loading";
 
-export default function ResetPassword() {
+function ResetPasswordContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const [formData, setFormData] = useState({
@@ -31,7 +32,9 @@ export default function ResetPassword() {
     // Verify token validity
     const verifyToken = async () => {
       try {
-        const response = await fetch(`/api/auth/verify-reset-token?token=${tokenParam}`);
+        const response = await fetch(
+          `/api/auth/verify-reset-token?token=${tokenParam}`
+        );
         const data = await response.json();
 
         if (!response.ok || !data.valid) {
@@ -94,8 +97,8 @@ export default function ResetPassword() {
   };
 
   return (
-    <AuthLayout 
-      title="Reset your password" 
+    <AuthLayout
+      title="Reset your password"
       subtitle="Create a new password for your account"
     >
       {error && (
@@ -113,7 +116,8 @@ export default function ResetPassword() {
       {!tokenValid ? (
         <div className="text-center">
           <p className="text-gray-700 mb-4">
-            The password reset link is invalid or has expired. Please request a new one.
+            The password reset link is invalid or has expired. Please request a
+            new one.
           </p>
           <Link
             href="/forgot-password"
@@ -147,8 +151,8 @@ export default function ResetPassword() {
 
             <div className="mt-1">
               <p className="text-xs text-gray-500">
-                Password must be at least 8 characters and include a number and a
-                special character.
+                Password must be at least 8 characters and include a number and
+                a special character.
               </p>
             </div>
 
@@ -164,4 +168,12 @@ export default function ResetPassword() {
       )}
     </AuthLayout>
   );
-} 
+}
+
+export default function ResetPassword() {
+  return (
+    <Suspense fallback={<Loading message="Loading reset password page..." />}>
+      <ResetPasswordContent />
+    </Suspense>
+  );
+}
