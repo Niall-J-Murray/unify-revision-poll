@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { signIn } from "next-auth/react";
@@ -8,8 +8,9 @@ import Input from "@/app/components/ui/input";
 import { FaGoogle, FaGithub } from "react-icons/fa";
 import AuthLayout from "@/app/components/auth-layout";
 import { FiMail } from "react-icons/fi";
+import Loading from "@/app/components/ui/loading";
 
-export default function Login() {
+function LoginContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [formData, setFormData] = useState({
@@ -255,20 +256,26 @@ export default function Login() {
               </div>
             </div>
 
-            <div className="mt-6 text-center">
-              <p className="text-sm text-github-secondary dark:text-github-dark-secondary">
-                Don't have an account?{" "}
-                <Link
-                  href="/register"
-                  className="font-medium text-github-primary dark:text-github-dark-primary hover:text-opacity-90"
-                >
-                  Sign up
-                </Link>
-              </p>
-            </div>
+            <p className="mt-6 text-center text-sm">
+              Don't have an account?{" "}
+              <Link
+                href="/register"
+                className="font-medium text-github-primary dark:text-github-dark-primary hover:text-opacity-90"
+              >
+                Sign up
+              </Link>
+            </p>
           </form>
         )
       )}
     </AuthLayout>
+  );
+}
+
+export default function Login() {
+  return (
+    <Suspense fallback={<Loading message="Loading login page..." />}>
+      <LoginContent />
+    </Suspense>
   );
 }
