@@ -13,8 +13,8 @@ const prismaClientSingleton = () => {
       : "URL is undefined"
   );
   console.log(
-    "POSTGRES_URL_NON_POOLING:",
-    process.env.POSTGRES_URL_NON_POOLING
+    "DIRECT_URL:",
+    process.env.DIRECT_URL
       ? "URL exists (not showing for security)"
       : "URL is undefined"
   );
@@ -26,46 +26,11 @@ const prismaClientSingleton = () => {
         url: process.env.DATABASE_URL,
       },
     },
-    // Add connection timeout settings
     errorFormat: "pretty",
   });
 };
 
-// Handle connection errors
-const handlePrismaConnectionError = (error: any) => {
-  console.error("Prisma connection error:", error);
-  // Log detailed error information
-  if (error.message) {
-    console.error("Error message:", error.message);
-  }
-  if (error.code) {
-    console.error("Error code:", error.code);
-  }
-  if (error.meta) {
-    console.error("Error metadata:", error.meta);
-  }
-
-  // Throw the error to be handled by the caller
-  throw error;
-};
-
-// Create Prisma client with error handling
-let prismaWithErrorHandling: PrismaClient;
-
-try {
-  prismaWithErrorHandling = globalForPrisma.prisma || prismaClientSingleton();
-
-  // Test the connection
-  prismaWithErrorHandling
-    .$connect()
-    .then(() => console.log("Prisma connection successful"))
-    .catch(handlePrismaConnectionError);
-} catch (error) {
-  console.error("Error initializing Prisma client:", error);
-  // Re-throw to prevent app from starting with a broken DB connection
-  throw error;
-}
-
-export const prisma = prismaWithErrorHandling;
+// Simple client without connection testing to avoid initialization errors
+export const prisma = globalForPrisma.prisma || prismaClientSingleton();
 
 if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
