@@ -1,11 +1,12 @@
 generator client {
-  provider = "prisma-client-js"
+  provider        = "prisma-client-js"
+  previewFeatures = ["metrics"]
 }
 
 datasource db {
   provider  = "postgresql"
   url       = env("DATABASE_URL")
-  directUrl = env("POSTGRES_URL_NON_POOLING") // uses a direct connection
+  directUrl = env("DIRECT_URL")
 }
 
 model User {
@@ -107,11 +108,11 @@ model Vote {
 
 model Activity {
   id                  String          @id @default(cuid())
-  type                ActivityType
   createdAt           DateTime        @default(now())
   userId              String
   featureRequestId    String?
   deletedRequestTitle String?
+  type                ActivityType
   featureRequest      FeatureRequest? @relation(fields: [featureRequestId], references: [id])
   user                User            @relation(fields: [userId], references: [id])
   votes               Vote[]
