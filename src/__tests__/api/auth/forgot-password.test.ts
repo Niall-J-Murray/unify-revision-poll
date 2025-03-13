@@ -65,8 +65,9 @@ describe("Forgot Password API", () => {
 
     // Verify response
     expect(response.status).toBe(200);
-    expect(response.data.success).toBe(true);
-    expect(response.data.message).toBe("Password reset email sent");
+    const data = await response.json();
+    expect(data.success).toBe(true);
+    expect(data.message).toBe("Password reset email sent");
 
     // Verify user was updated with reset token
     expect(mockPrisma.user.update).toHaveBeenCalledWith({
@@ -96,8 +97,9 @@ describe("Forgot Password API", () => {
 
     // Verify response is still success (for security reasons)
     expect(response.status).toBe(200);
-    expect(response.data.success).toBe(true);
-    expect(response.data.message).toBe(
+    const data = await response.json();
+    expect(data.success).toBe(true);
+    expect(data.message).toBe(
       "If your email is registered, you will receive a password reset link."
     );
 
@@ -113,12 +115,15 @@ describe("Forgot Password API", () => {
     });
     const response = await POST(req as any);
 
-    // Check for error response
-    expect(response.status).toBe(500);
-    expect(response.data.success).toBe(false);
-    expect(response.data.message).toBe("Failed to process request");
+    // Check for success response (for security reasons)
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.success).toBe(true);
+    expect(data.message).toBe(
+      "If your email is registered, you will receive a password reset link."
+    );
 
-    // No database operations or emails
+    // No database operations or emails should occur
     expect(mockPrisma.user.findUnique).not.toHaveBeenCalled();
     expect(mockPrisma.user.update).not.toHaveBeenCalled();
     expect(sendPasswordResetEmail).not.toHaveBeenCalled();
@@ -138,8 +143,9 @@ describe("Forgot Password API", () => {
 
     // Should return error
     expect(response.status).toBe(500);
-    expect(response.data.success).toBe(false);
-    expect(response.data.message).toBe("Failed to process request");
+    const data = await response.json();
+    expect(data.success).toBe(false);
+    expect(data.message).toBe("Failed to process request");
   });
 
   it("should handle email sending errors gracefully", async () => {
@@ -158,8 +164,9 @@ describe("Forgot Password API", () => {
 
     // Should return error
     expect(response.status).toBe(500);
-    expect(response.data.success).toBe(false);
-    expect(response.data.message).toBe("Failed to process request");
+    const data = await response.json();
+    expect(data.success).toBe(false);
+    expect(data.message).toBe("Failed to process request");
 
     // Verify token was still created but email failed
     expect(mockPrisma.user.update).toHaveBeenCalled();
@@ -176,7 +183,8 @@ describe("Forgot Password API", () => {
 
     // Should return error
     expect(response.status).toBe(500);
-    expect(response.data.success).toBe(false);
-    expect(response.data.message).toBe("Failed to process request");
+    const data = await response.json();
+    expect(data.success).toBe(false);
+    expect(data.message).toBe("Failed to process request");
   });
 });

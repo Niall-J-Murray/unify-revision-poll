@@ -5,6 +5,7 @@ import {
   mockUnauthenticatedSession,
 } from "../../helpers/api-test-helpers";
 import bcrypt from "bcryptjs";
+import { getServerSession } from "next-auth/next";
 
 // Mock dependencies
 jest.mock("@/lib/prisma", () => ({
@@ -54,6 +55,15 @@ import { POST } from "@/app/api/user/change-password/route";
 describe("Change Password API", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    // Mock authenticated session with email
+    (getServerSession as jest.Mock).mockResolvedValue({
+      user: {
+        id: "mock-user-id",
+        name: "Test User",
+        email: "test@example.com",
+        role: "USER",
+      },
+    });
   });
 
   it("should return 400 if current password is missing", async () => {
