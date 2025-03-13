@@ -1,11 +1,11 @@
-import { createMockNextRequest } from "../../helpers/next-request-helpers";
-import { prismaMock } from "../../helpers/prisma-mock";
-import { mockPrisma } from "../../helpers/prisma-mock";
+import { createMockNextRequest } from "../../../../helpers/next-request-helpers";
+import { prismaMock } from "../../../../helpers/prisma-mock";
+import { mockPrisma } from "../../../../helpers/prisma-mock";
 import {
   createMockRequest,
   mockAuthenticatedSession,
   mockUnauthenticatedSession,
-} from "../../helpers/api-test-helpers";
+} from "../../../../helpers/api-test-helpers";
 
 // Mock dependencies
 jest.mock("@/lib/prisma", () => ({

@@ -1,156 +1,182 @@
-// Import the mockPrisma helper
+import { NextResponse } from "next/server";
 import { mockPrisma } from "../../helpers/prisma-mock";
+import { createMockRequest } from "../../helpers/api-test-helpers-fixed";
 
-// Move the jest.mock calls to the top before any imports
-jest.mock("@/app/api/auth/forgot-password/route");
-jest.mock("@/lib/prisma");
+// Mock crypto
+jest.mock("crypto", () => ({
+  randomBytes: jest.fn(() => ({
+    toString: jest.fn(() => "mock-random-token"),
+  })),
+  createHash: jest.fn(() => ({
+    update: jest.fn(() => ({
+      digest: jest.fn(() => "mock-hashed-token"),
+    })),
+  })),
+}));
 
-// Import the mocked module
+// Mock dependencies
+jest.mock("@/lib/prisma", () => ({
+  prisma: mockPrisma,
+}));
+
+// Mock email sending
+jest.mock("@/lib/email", () => ({
+  sendPasswordResetEmail: jest.fn(),
+}));
+
+// Mock NextResponse
+jest.mock("next/server", () => ({
+  NextResponse: {
+    json: jest.fn((data, options = { status: 200 }) => {
+      return {
+        data,
+        status: options.status,
+        json: async () => data,
+      };
+    }),
+  },
+}));
+
+// Import the POST handler after mocking dependencies to avoid initialization issues
 import { POST } from "@/app/api/auth/forgot-password/route";
+import { sendPasswordResetEmail } from "@/lib/email";
 
 describe("Forgot Password API", () => {
-  // Reset all mocks before each test
   beforeEach(() => {
-    jest.resetAllMocks();
+    jest.clearAllMocks();
   });
 
-  describe("POST /api/auth/forgot-password", () => {
-    it("should return 400 if email is missing", async () => {
-      // Create mock return objects
-      const mockResult = {
-        status: 400,
-        json: async () => ({ success: false, message: "Email is required" }),
-      };
+  const mockUser = {
+    id: "user-123",
+    email: "test@example.com",
+    name: "Test User",
+  };
 
-      // Set up the mock implementation
-      POST.mockResolvedValueOnce(mockResult);
+  it("should send a password reset email when user exists", async () => {
+    // Mock user exists
+    mockPrisma.user.findUnique.mockResolvedValue(mockUser);
+    mockPrisma.user.update.mockResolvedValue({ ...mockUser });
 
-      // The request won't actually be used since we're mocking the route handler
-      const result = await POST();
+    const req = createMockRequest({
+      method: "POST",
+      body: { email: "test@example.com" },
+    });
+    const response = await POST(req as any);
 
-      expect(result.status).toBe(400);
-      expect(await result.json()).toEqual({
-        success: false,
-        message: "Email is required",
-      });
+    // Verify response
+    expect(response.status).toBe(200);
+    expect(response.data.success).toBe(true);
+    expect(response.data.message).toBe("Password reset email sent");
+
+    // Verify user was updated with reset token
+    expect(mockPrisma.user.update).toHaveBeenCalledWith({
+      where: { id: mockUser.id },
+      data: expect.objectContaining({
+        resetPasswordToken: "mock-hashed-token",
+        resetPasswordExpires: expect.any(Date),
+      }),
     });
 
-    it("should return 400 if email format is invalid", async () => {
-      // Create mock return objects
-      const mockResult = {
-        status: 400,
-        json: async () => ({ success: false, message: "Invalid email format" }),
-      };
+    // Verify email was sent
+    expect(sendPasswordResetEmail).toHaveBeenCalledWith(
+      "test@example.com",
+      "mock-random-token"
+    );
+  });
 
-      // Set up the mock implementation
-      POST.mockResolvedValueOnce(mockResult);
+  it("should return success even when user does not exist (security)", async () => {
+    // Mock user does not exist
+    mockPrisma.user.findUnique.mockResolvedValue(null);
 
-      // The request won't actually be used since we're mocking the route handler
-      const result = await POST();
-
-      expect(result.status).toBe(400);
-      expect(await result.json()).toEqual({
-        success: false,
-        message: "Invalid email format",
-      });
+    const req = createMockRequest({
+      method: "POST",
+      body: { email: "nonexistent@example.com" },
     });
+    const response = await POST(req as any);
 
-    it("should return success message even if user not found (security)", async () => {
-      // Mock user not found but return success for security
-      mockPrisma.user.findUnique.mockResolvedValueOnce(null);
+    // Verify response is still success (for security reasons)
+    expect(response.status).toBe(200);
+    expect(response.data.success).toBe(true);
+    expect(response.data.message).toBe(
+      "If your email is registered, you will receive a password reset link."
+    );
 
-      // Create mock return objects
-      const mockResult = {
-        status: 200,
-        json: async () => ({
-          success: true,
-          message:
-            "If a matching account was found, we've sent a password reset email",
-        }),
-      };
+    // Verify no token update or email was sent
+    expect(mockPrisma.user.update).not.toHaveBeenCalled();
+    expect(sendPasswordResetEmail).not.toHaveBeenCalled();
+  });
 
-      // Set up the mock implementation
-      POST.mockResolvedValueOnce(mockResult);
-
-      // The request won't actually be used since we're mocking the route handler
-      const result = await POST();
-
-      expect(result.status).toBe(200);
-      expect(await result.json()).toEqual({
-        success: true,
-        message:
-          "If a matching account was found, we've sent a password reset email",
-      });
+  it("should handle missing email in request", async () => {
+    const req = createMockRequest({
+      method: "POST",
+      body: {},
     });
+    const response = await POST(req as any);
 
-    it("should generate reset token for existing user", async () => {
-      // Mock finding the user
-      mockPrisma.user.findUnique.mockResolvedValueOnce({
-        id: "user-1",
-        email: "user@example.com",
-        name: "Test User",
-      });
+    // Check for error response
+    expect(response.status).toBe(500);
+    expect(response.data.success).toBe(false);
+    expect(response.data.message).toBe("Failed to process request");
 
-      // Mock updating the user with reset token
-      mockPrisma.user.update.mockResolvedValueOnce({
-        id: "user-1",
-        email: "user@example.com",
-        resetPasswordToken: "mock-token",
-        resetPasswordExpires: new Date(Date.now() + 3600000),
-      });
+    // No database operations or emails
+    expect(mockPrisma.user.findUnique).not.toHaveBeenCalled();
+    expect(mockPrisma.user.update).not.toHaveBeenCalled();
+    expect(sendPasswordResetEmail).not.toHaveBeenCalled();
+  });
 
-      // Create mock return objects
-      const mockResult = {
-        status: 200,
-        json: async () => ({
-          success: true,
-          message:
-            "If a matching account was found, we've sent a password reset email",
-        }),
-      };
+  it("should handle database errors gracefully", async () => {
+    // Mock database error
+    mockPrisma.user.findUnique.mockRejectedValue(
+      new Error("Database connection error")
+    );
 
-      // Set up the mock implementation
-      POST.mockResolvedValueOnce(mockResult);
-
-      // The request won't actually be used since we're mocking the route handler
-      const result = await POST();
-
-      expect(result.status).toBe(200);
-      const data = await result.json();
-      expect(data).toHaveProperty("success", true);
+    const req = createMockRequest({
+      method: "POST",
+      body: { email: "test@example.com" },
     });
+    const response = await POST(req as any);
 
-    it("should handle database errors gracefully", async () => {
-      // Mock finding the user but throw error on update
-      mockPrisma.user.findUnique.mockResolvedValueOnce({
-        id: "user-1",
-        email: "user@example.com",
-        name: "Test User",
-      });
+    // Should return error
+    expect(response.status).toBe(500);
+    expect(response.data.success).toBe(false);
+    expect(response.data.message).toBe("Failed to process request");
+  });
 
-      // Mock database error
-      mockPrisma.user.update.mockRejectedValueOnce(new Error("Database error"));
+  it("should handle email sending errors gracefully", async () => {
+    // Mock user exists but email sending fails
+    mockPrisma.user.findUnique.mockResolvedValue(mockUser);
+    mockPrisma.user.update.mockResolvedValue({ ...mockUser });
+    (sendPasswordResetEmail as jest.Mock).mockRejectedValue(
+      new Error("Email sending failed")
+    );
 
-      // Create mock return objects
-      const mockResult = {
-        status: 500,
-        json: async () => ({
-          success: false,
-          message: "Failed to process request",
-        }),
-      };
-
-      // Set up the mock implementation
-      POST.mockResolvedValueOnce(mockResult);
-
-      // The request won't actually be used since we're mocking the route handler
-      const result = await POST();
-
-      expect(result.status).toBe(500);
-      expect(await result.json()).toEqual({
-        success: false,
-        message: "Failed to process request",
-      });
+    const req = createMockRequest({
+      method: "POST",
+      body: { email: "test@example.com" },
     });
+    const response = await POST(req as any);
+
+    // Should return error
+    expect(response.status).toBe(500);
+    expect(response.data.success).toBe(false);
+    expect(response.data.message).toBe("Failed to process request");
+
+    // Verify token was still created but email failed
+    expect(mockPrisma.user.update).toHaveBeenCalled();
+    expect(sendPasswordResetEmail).toHaveBeenCalled();
+  });
+
+  it("should handle JSON parsing errors", async () => {
+    // Create a request that will throw during JSON parsing
+    const req = createMockRequest({
+      method: "POST",
+      jsonError: new Error("Invalid JSON"),
+    });
+    const response = await POST(req as any);
+
+    // Should return error
+    expect(response.status).toBe(500);
+    expect(response.data.success).toBe(false);
+    expect(response.data.message).toBe("Failed to process request");
   });
 });

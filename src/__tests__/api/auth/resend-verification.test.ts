@@ -1,247 +1,354 @@
-import { NextRequest } from 'next/server';
-import { createMockRequestResponse } from '../../helpers/next-request-helpers';
-import { mockPrisma } from '../../helpers/prisma-mock';
+import { NextRequest, NextResponse } from "next/server";
+import { mockPrisma } from "../../helpers/prisma-mock";
+import { getServerSession } from "next-auth/next";
+import * as emailModule from "@/lib/email";
 
-// Mock the POST function from the resend-verification route module
-const mockPost = jest.fn();
-jest.mock('@/app/api/auth/resend-verification/route', () => ({
-  POST: mockPost
+// Mock dependencies
+jest.mock("@/lib/prisma", () => ({
+  prisma: mockPrisma,
 }));
 
 // Mock next-auth
-jest.mock('next-auth', () => ({
-  auth: jest.fn()
-}));
-import { auth } from 'next-auth';
-
-// Mock the email service
-jest.mock('@/lib/email-service', () => ({
-  sendVerificationEmail: jest.fn().mockResolvedValue(true)
-}));
-import { sendVerificationEmail } from '@/lib/email-service';
-
-// Mock Prisma
-jest.mock('@/lib/prisma', () => ({
-  __esModule: true,
-  default: mockPrisma
+jest.mock("next-auth/next", () => ({
+  getServerSession: jest.fn(),
 }));
 
-describe('Resend Verification Email API', () => {
-  const mockUserId = 'user-123';
-  const mockUser = { 
-    id: mockUserId, 
-    email: 'user@example.com',
-    emailVerified: null
-  };
-  
+// Mock email service
+jest.mock("@/lib/email", () => ({
+  sendVerificationEmail: jest.fn().mockResolvedValue(undefined),
+}));
+
+// Mock verify-email route for token generation
+jest.mock("@/app/api/auth/verify-email/route", () => ({
+  generateVerificationToken: jest
+    .fn()
+    .mockReturnValue("mock-verification-token"),
+}));
+
+// Mock authOptions
+jest.mock("@/app/api/auth/[...nextauth]/route", () => ({
+  authOptions: {},
+}));
+
+// Import the route handler after mocking dependencies
+import { POST } from "@/app/api/auth/resend-verification/route";
+
+describe("Resend Verification API", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    (auth as jest.Mock).mockResolvedValue({
-      user: mockUser
-    });
-  });
 
-  it('should return 401 if user is not authenticated', async () => {
-    (auth as jest.Mock).mockResolvedValueOnce(null);
-    mockPost.mockImplementation(async () => {
+    // Mock NextResponse.json
+    jest.spyOn(NextResponse, "json").mockImplementation((data, options) => {
       return {
-        status: 401,
-        json: async () => ({ 
-          success: false, 
-          message: 'Unauthorized' 
-        })
-      };
+        status: options?.status || 200,
+        json: async () => data,
+        ...data,
+      } as any;
     });
-
-    const { req, res } = createMockRequestResponse({
-      method: 'POST',
-      url: '/api/auth/resend-verification',
-      headers: {
-        'content-type': 'application/json'
-      }
-    });
-
-    await mockPost(req);
-    
-    expect(res.status).toBe(401);
   });
 
-  it('should return 400 if email is already verified', async () => {
-    (auth as jest.Mock).mockResolvedValueOnce({
-      user: { ...mockUser, emailVerified: new Date() }
-    });
+  it("should return 401 if user is not authenticated", async () => {
+    // Mock no session
+    (getServerSession as jest.Mock).mockResolvedValueOnce(null);
 
-    mockPost.mockImplementation(async () => {
-      return {
-        status: 400,
-        json: async () => ({ 
-          success: false, 
-          message: 'Email is already verified' 
-        })
-      };
-    });
-
-    const { req, res } = createMockRequestResponse({
-      method: 'POST',
-      url: '/api/auth/resend-verification',
-      headers: {
-        'content-type': 'application/json'
+    // Create request
+    const req = new NextRequest(
+      new URL("http://localhost:3000/api/auth/resend-verification"),
+      {
+        method: "POST",
+        body: JSON.stringify({ email: "user@example.com" }),
       }
-    });
+    );
 
-    await mockPost(req);
-    
-    expect(res.status).toBe(400);
+    const response = await POST(req);
+
+    // Verify response
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({
+      success: false,
+      message: "Unauthorized",
+    });
   });
 
-  it('should successfully resend verification email', async () => {
-    // Mock existing verification record
-    mockPrisma.emailVerification.findFirst.mockResolvedValueOnce({
-      id: 'verif-1',
-      userId: mockUserId,
-      token: 'old-token',
-      expiresAt: new Date(),
-      createdAt: new Date()
+  it("should return 401 if email does not match session user", async () => {
+    // Mock session with different email
+    (getServerSession as jest.Mock).mockResolvedValueOnce({
+      user: {
+        id: "user-123",
+        email: "session-user@example.com",
+      },
     });
 
-    // Mock deleting the old record
-    mockPrisma.emailVerification.delete.mockResolvedValueOnce({
-      id: 'verif-1',
-      userId: mockUserId,
-      token: 'old-token',
-      expiresAt: new Date(),
-      createdAt: new Date()
-    });
-
-    // Mock creating a new verification record
-    mockPrisma.emailVerification.create.mockResolvedValueOnce({
-      id: 'verif-2',
-      userId: mockUserId,
-      token: 'new-token',
-      expiresAt: new Date(),
-      createdAt: new Date()
-    });
-
-    mockPost.mockImplementation(async () => {
-      return {
-        status: 200,
-        json: async () => ({ 
-          success: true, 
-          message: 'Verification email sent successfully' 
-        })
-      };
-    });
-
-    const { req, res } = createMockRequestResponse({
-      method: 'POST',
-      url: '/api/auth/resend-verification',
-      headers: {
-        'content-type': 'application/json'
+    // Create request with different email
+    const req = new NextRequest(
+      new URL("http://localhost:3000/api/auth/resend-verification"),
+      {
+        method: "POST",
+        body: JSON.stringify({ email: "different-user@example.com" }),
       }
+    );
+
+    // Mock req.json to return object with email
+    jest.spyOn(req, "json").mockResolvedValueOnce({
+      email: "different-user@example.com",
     });
 
-    await mockPost(req);
-    
-    expect(res.status).toBe(200);
-    expect(sendVerificationEmail).toHaveBeenCalled();
+    const response = await POST(req);
+
+    // Verify response
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({
+      success: false,
+      message: "Unauthorized",
+    });
   });
 
-  it('should create a new verification record if none exists', async () => {
-    // Mock no existing verification record
-    mockPrisma.emailVerification.findFirst.mockResolvedValueOnce(null);
-
-    // Mock creating a new verification record
-    mockPrisma.emailVerification.create.mockResolvedValueOnce({
-      id: 'verif-2',
-      userId: mockUserId,
-      token: 'new-token',
-      expiresAt: new Date(),
-      createdAt: new Date()
+  it("should return 404 if user is not found", async () => {
+    // Mock session with matching email
+    (getServerSession as jest.Mock).mockResolvedValueOnce({
+      user: {
+        id: "user-123",
+        email: "user@example.com",
+      },
     });
 
-    mockPost.mockImplementation(async () => {
-      return {
-        status: 200,
-        json: async () => ({ 
-          success: true, 
-          message: 'Verification email sent successfully' 
-        })
-      };
-    });
+    // Mock user not found
+    mockPrisma.user.findUnique.mockResolvedValueOnce(null);
 
-    const { req, res } = createMockRequestResponse({
-      method: 'POST',
-      url: '/api/auth/resend-verification',
-      headers: {
-        'content-type': 'application/json'
+    // Create request
+    const req = new NextRequest(
+      new URL("http://localhost:3000/api/auth/resend-verification"),
+      {
+        method: "POST",
+        body: JSON.stringify({ email: "user@example.com" }),
       }
+    );
+
+    // Mock req.json to return object with email
+    jest.spyOn(req, "json").mockResolvedValueOnce({
+      email: "user@example.com",
     });
 
-    await mockPost(req);
-    
-    expect(res.status).toBe(200);
-    expect(sendVerificationEmail).toHaveBeenCalled();
-    expect(mockPrisma.emailVerification.delete).not.toHaveBeenCalled();
+    const response = await POST(req);
+
+    // Verify Prisma was called with correct parameters
+    expect(mockPrisma.user.findUnique).toHaveBeenCalledWith({
+      where: { email: "user@example.com" },
+    });
+
+    // Verify response
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({
+      success: false,
+      message: "User not found",
+    });
   });
 
-  it('should handle email sending failure', async () => {
-    mockPrisma.emailVerification.findFirst.mockResolvedValueOnce(null);
-    mockPrisma.emailVerification.create.mockResolvedValueOnce({
-      id: 'verif-2',
-      userId: mockUserId,
-      token: 'new-token',
-      expiresAt: new Date(),
-      createdAt: new Date()
-    });
-    
-    (sendVerificationEmail as jest.Mock).mockRejectedValueOnce(new Error('Failed to send email'));
-
-    mockPost.mockImplementation(async () => {
-      return {
-        status: 500,
-        json: async () => ({ 
-          success: false, 
-          message: 'Failed to send verification email' 
-        })
-      };
+  it("should return 400 if email is already verified", async () => {
+    // Mock session with matching email
+    (getServerSession as jest.Mock).mockResolvedValueOnce({
+      user: {
+        id: "user-123",
+        email: "user@example.com",
+      },
     });
 
-    const { req, res } = createMockRequestResponse({
-      method: 'POST',
-      url: '/api/auth/resend-verification',
-      headers: {
-        'content-type': 'application/json'
+    // Mock user found with verified email
+    mockPrisma.user.findUnique.mockResolvedValueOnce({
+      id: "user-123",
+      email: "user@example.com",
+      emailVerified: new Date(),
+    });
+
+    // Create request
+    const req = new NextRequest(
+      new URL("http://localhost:3000/api/auth/resend-verification"),
+      {
+        method: "POST",
+        body: JSON.stringify({ email: "user@example.com" }),
       }
+    );
+
+    // Mock req.json to return object with email
+    jest.spyOn(req, "json").mockResolvedValueOnce({
+      email: "user@example.com",
     });
 
-    await mockPost(req);
-    
-    expect(res.status).toBe(500);
+    const response = await POST(req);
+
+    // Verify response
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      success: false,
+      message: "Email is already verified",
+    });
   });
 
-  it('should handle database errors', async () => {
-    mockPrisma.emailVerification.findFirst.mockRejectedValueOnce(new Error('Database error'));
-
-    mockPost.mockImplementation(async () => {
-      return {
-        status: 500,
-        json: async () => ({ 
-          success: false, 
-          message: 'Failed to resend verification email' 
-        })
-      };
+  it("should successfully resend verification email", async () => {
+    // Mock session with matching email
+    (getServerSession as jest.Mock).mockResolvedValueOnce({
+      user: {
+        id: "user-123",
+        email: "user@example.com",
+      },
     });
 
-    const { req, res } = createMockRequestResponse({
-      method: 'POST',
-      url: '/api/auth/resend-verification',
-      headers: {
-        'content-type': 'application/json'
+    // Mock user found with unverified email
+    mockPrisma.user.findUnique.mockResolvedValueOnce({
+      id: "user-123",
+      email: "user@example.com",
+      emailVerified: null,
+    });
+
+    // Mock user update
+    mockPrisma.user.update.mockResolvedValueOnce({
+      id: "user-123",
+      email: "user@example.com",
+    });
+
+    // Create request
+    const req = new NextRequest(
+      new URL("http://localhost:3000/api/auth/resend-verification"),
+      {
+        method: "POST",
+        body: JSON.stringify({ email: "user@example.com" }),
       }
+    );
+
+    // Mock req.json to return object with email
+    jest.spyOn(req, "json").mockResolvedValueOnce({
+      email: "user@example.com",
     });
 
-    await mockPost(req);
-    
-    expect(res.status).toBe(500);
+    const response = await POST(req);
+
+    // Verify user was updated with new token
+    expect(mockPrisma.user.update).toHaveBeenCalledWith({
+      where: { email: "user@example.com" },
+      data: {
+        emailVerificationToken: "mock-verification-token",
+        emailVerificationExpires: expect.any(Date),
+      },
+    });
+
+    // Verify email was sent
+    expect(emailModule.sendVerificationEmail).toHaveBeenCalledWith(
+      "user@example.com",
+      "mock-verification-token"
+    );
+
+    // Verify response
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      success: true,
+      message: "Verification email sent successfully",
+    });
   });
-}); 
+
+  it("should return 500 on database error", async () => {
+    // Mock session with matching email
+    (getServerSession as jest.Mock).mockResolvedValueOnce({
+      user: {
+        id: "user-123",
+        email: "user@example.com",
+      },
+    });
+
+    // Mock database error
+    mockPrisma.user.findUnique.mockRejectedValueOnce(
+      new Error("Database error")
+    );
+
+    // Create request
+    const req = new NextRequest(
+      new URL("http://localhost:3000/api/auth/resend-verification"),
+      {
+        method: "POST",
+        body: JSON.stringify({ email: "user@example.com" }),
+      }
+    );
+
+    // Mock req.json to return object with email
+    jest.spyOn(req, "json").mockResolvedValueOnce({
+      email: "user@example.com",
+    });
+
+    // Mock console.error to prevent test output pollution
+    jest.spyOn(console, "error").mockImplementation(() => {});
+
+    const response = await POST(req);
+
+    // Verify error was logged
+    expect(console.error).toHaveBeenCalledWith(
+      "Resend verification error:",
+      expect.any(Error)
+    );
+
+    // Verify response
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({
+      success: false,
+      message: "Failed to send verification email",
+    });
+  });
+
+  it("should return 500 on email sending error", async () => {
+    // Mock session with matching email
+    (getServerSession as jest.Mock).mockResolvedValueOnce({
+      user: {
+        id: "user-123",
+        email: "user@example.com",
+      },
+    });
+
+    // Mock user found with unverified email
+    mockPrisma.user.findUnique.mockResolvedValueOnce({
+      id: "user-123",
+      email: "user@example.com",
+      emailVerified: null,
+    });
+
+    // Mock user update
+    mockPrisma.user.update.mockResolvedValueOnce({
+      id: "user-123",
+      email: "user@example.com",
+    });
+
+    // Mock email sending error
+    (emailModule.sendVerificationEmail as jest.Mock).mockRejectedValueOnce(
+      new Error("Email sending failed")
+    );
+
+    // Create request
+    const req = new NextRequest(
+      new URL("http://localhost:3000/api/auth/resend-verification"),
+      {
+        method: "POST",
+        body: JSON.stringify({ email: "user@example.com" }),
+      }
+    );
+
+    // Mock req.json to return object with email
+    jest.spyOn(req, "json").mockResolvedValueOnce({
+      email: "user@example.com",
+    });
+
+    // Mock console.error to prevent test output pollution
+    jest.spyOn(console, "error").mockImplementation(() => {});
+
+    const response = await POST(req);
+
+    // Verify error was logged
+    expect(console.error).toHaveBeenCalledWith(
+      "Resend verification error:",
+      expect.any(Error)
+    );
+
+    // Verify response
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({
+      success: false,
+      message: "Failed to send verification email",
+    });
+  });
+});

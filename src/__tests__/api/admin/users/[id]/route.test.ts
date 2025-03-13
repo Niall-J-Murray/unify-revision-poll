@@ -1,9 +1,9 @@
-import { mockPrisma } from "../../helpers/prisma-mock";
+import { mockPrisma } from "../../../../helpers/prisma-mock";
 import {
   createMockRequest,
   mockAuthenticatedSession,
   mockUnauthenticatedSession,
-} from "../../helpers/api-test-helpers";
+} from "../../../../helpers/api-test-helpers";
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 
@@ -16,7 +16,7 @@ jest.mock("@/lib/prisma", () => ({
   prisma: mockPrisma,
 }));
 
-// Mock NextResponse and NextRequest
+// Mock NextResponse
 jest.mock("next/server", () => ({
   NextResponse: {
     json: jest.fn((data, options = { status: 200 }) => {
@@ -30,15 +30,12 @@ jest.mock("next/server", () => ({
   },
 }));
 
-// Mock authOptions
+// Mock route module and authOptions to prevent NextAuth initialization
 jest.mock("@/app/api/auth/[...nextauth]/route", () => ({
-  authOptions: {
-    providers: [],
-    callbacks: {},
-  },
+  authOptions: {},
 }));
 
-// Import the actual route handler
+// Import the route handler - this should now work because we've mocked the dependencies
 import { DELETE } from "@/app/api/admin/users/[id]/route";
 
 describe("Admin Users [id] API", () => {
@@ -58,7 +55,7 @@ describe("Admin Users [id] API", () => {
 
       const context = { params: { id: "test-user-id" } };
 
-      const response = await DELETE(req, context);
+      const response = await DELETE(req as any, context);
       expect(response.status).toBe(401);
 
       const data = await response.json();
@@ -76,7 +73,7 @@ describe("Admin Users [id] API", () => {
 
       const context = { params: { id: "test-user-id" } };
 
-      const response = await DELETE(req, context);
+      const response = await DELETE(req as any, context);
       expect(response.status).toBe(401);
 
       const data = await response.json();
@@ -101,7 +98,7 @@ describe("Admin Users [id] API", () => {
 
       const context = { params: { id: "test-user-id" } };
 
-      const response = await DELETE(req, context);
+      const response = await DELETE(req as any, context);
       expect(response.status).toBe(200);
 
       const data = await response.json();
@@ -126,7 +123,7 @@ describe("Admin Users [id] API", () => {
 
       const context = { params: { id: "test-user-id" } };
 
-      const response = await DELETE(req, context);
+      const response = await DELETE(req as any, context);
       expect(response.status).toBe(500);
 
       const data = await response.json();

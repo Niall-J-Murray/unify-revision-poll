@@ -1,175 +1,141 @@
-import { NextRequest } from 'next/server';
-import { createMockRequestResponse } from '../../helpers/next-request-helpers';
-import { mockPrisma } from '../../helpers/prisma-mock';
+import { NextRequest, NextResponse } from "next/server";
+import { mockPrisma } from "../../helpers/prisma-mock";
+import * as crypto from "crypto";
 
-// Mock the POST function from the verify-reset-token route module
-const mockPost = jest.fn();
-jest.mock('@/app/api/auth/verify-reset-token/route', () => ({
-  POST: mockPost
+// Mock dependencies
+jest.mock("@/lib/prisma", () => ({
+  prisma: mockPrisma,
 }));
 
-// Mock Prisma
-jest.mock('@/lib/prisma', () => ({
-  __esModule: true,
-  default: mockPrisma
+// Mock crypto
+jest.mock("crypto", () => ({
+  createHash: jest.fn().mockReturnValue({
+    update: jest.fn().mockReturnThis(),
+    digest: jest.fn().mockReturnValue("hashed-token-123"),
+  }),
 }));
 
-describe('Verify Reset Token API', () => {
-  const mockToken = 'valid-reset-token';
-  const mockUserId = 'user-123';
-  
+// Import the route handler after mocking dependencies
+import { GET } from "@/app/api/auth/verify-reset-token/route";
+
+describe("Verify Reset Token API", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-  });
 
-  it('should return 400 if token is missing', async () => {
-    mockPost.mockImplementation(async () => {
+    // Mock NextResponse.json
+    jest.spyOn(NextResponse, "json").mockImplementation((data, options) => {
       return {
-        status: 400,
-        json: async () => ({ 
-          success: false, 
-          message: 'Reset token is required' 
-        })
-      };
+        status: options?.status || 200,
+        json: async () => data,
+        ...data,
+      } as any;
     });
-
-    const { req, res } = createMockRequestResponse({
-      method: 'POST',
-      url: '/api/auth/verify-reset-token',
-      headers: {
-        'content-type': 'application/json'
-      },
-      body: {}
-    });
-
-    await mockPost(req);
-    
-    expect(res.status).toBe(400);
   });
 
-  it('should return 400 if token is invalid or expired', async () => {
-    mockPrisma.passwordReset.findUnique.mockResolvedValueOnce(null);
+  it("should return 400 if token is missing", async () => {
+    // Create request with missing token
+    const req = new NextRequest(
+      new URL("http://localhost:3000/api/auth/verify-reset-token")
+    );
 
-    mockPost.mockImplementation(async () => {
-      return {
-        status: 400,
-        json: async () => ({ 
-          success: false, 
-          message: 'Invalid or expired reset token' 
-        })
-      };
+    const response = await GET(req);
+
+    // Verify response
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      valid: false,
+      message: "Missing token",
     });
-
-    const { req, res } = createMockRequestResponse({
-      method: 'POST',
-      url: '/api/auth/verify-reset-token',
-      headers: {
-        'content-type': 'application/json'
-      },
-      body: { token: 'invalid-token' }
-    });
-
-    await mockPost(req);
-    
-    expect(res.status).toBe(400);
   });
 
-  it('should return 400 if token is expired', async () => {
-    const expiredDate = new Date();
-    expiredDate.setHours(expiredDate.getHours() - 1); // Expired
+  it("should return 400 if token is invalid or expired", async () => {
+    // Mock user not found
+    mockPrisma.user.findFirst.mockResolvedValueOnce(null);
 
-    mockPrisma.passwordReset.findUnique.mockResolvedValueOnce({
-      id: 'reset-1',
-      token: mockToken,
-      userId: mockUserId,
-      expiresAt: expiredDate,
-      createdAt: new Date()
-    });
+    // Create request with token
+    const req = new NextRequest(
+      new URL(
+        "http://localhost:3000/api/auth/verify-reset-token?token=invalid-token"
+      )
+    );
 
-    mockPost.mockImplementation(async () => {
-      return {
-        status: 400,
-        json: async () => ({ 
-          success: false, 
-          message: 'Invalid or expired reset token' 
-        })
-      };
-    });
+    const response = await GET(req);
 
-    const { req, res } = createMockRequestResponse({
-      method: 'POST',
-      url: '/api/auth/verify-reset-token',
-      headers: {
-        'content-type': 'application/json'
+    // Verify crypto was called with correct parameters
+    expect(crypto.createHash).toHaveBeenCalledWith("sha256");
+
+    // Verify Prisma was called with correct parameters
+    expect(mockPrisma.user.findFirst).toHaveBeenCalledWith({
+      where: {
+        resetPasswordToken: "hashed-token-123",
+        resetPasswordExpires: {
+          gt: expect.any(Date),
+        },
       },
-      body: { token: mockToken }
     });
 
-    await mockPost(req);
-    
-    expect(res.status).toBe(400);
+    // Verify response
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      valid: false,
+      message: "Invalid or expired token",
+    });
   });
 
-  it('should verify a valid token', async () => {
-    const validDate = new Date();
-    validDate.setHours(validDate.getHours() + 1); // Still valid
-
-    mockPrisma.passwordReset.findUnique.mockResolvedValueOnce({
-      id: 'reset-1',
-      token: mockToken,
-      userId: mockUserId,
-      expiresAt: validDate,
-      createdAt: new Date()
+  it("should return 200 if token is valid", async () => {
+    // Mock user found
+    mockPrisma.user.findFirst.mockResolvedValueOnce({
+      id: "user-123",
+      email: "user@example.com",
+      resetPasswordToken: "hashed-token-123",
+      resetPasswordExpires: new Date(Date.now() + 3600000), // 1 hour in the future
     });
 
-    mockPost.mockImplementation(async () => {
-      return {
-        status: 200,
-        json: async () => ({ 
-          success: true, 
-          message: 'Token is valid' 
-        })
-      };
-    });
+    // Create request with token
+    const req = new NextRequest(
+      new URL(
+        "http://localhost:3000/api/auth/verify-reset-token?token=valid-token"
+      )
+    );
 
-    const { req, res } = createMockRequestResponse({
-      method: 'POST',
-      url: '/api/auth/verify-reset-token',
-      headers: {
-        'content-type': 'application/json'
-      },
-      body: { token: mockToken }
-    });
+    const response = await GET(req);
 
-    await mockPost(req);
-    
-    expect(res.status).toBe(200);
+    // Verify response
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      valid: true,
+    });
   });
 
-  it('should handle database errors', async () => {
-    mockPrisma.passwordReset.findUnique.mockRejectedValueOnce(new Error('Database error'));
+  it("should return 500 on database error", async () => {
+    // Mock database error
+    mockPrisma.user.findFirst.mockRejectedValueOnce(
+      new Error("Database error")
+    );
 
-    mockPost.mockImplementation(async () => {
-      return {
-        status: 500,
-        json: async () => ({ 
-          success: false, 
-          message: 'Failed to verify reset token' 
-        })
-      };
+    // Create request with token
+    const req = new NextRequest(
+      new URL(
+        "http://localhost:3000/api/auth/verify-reset-token?token=some-token"
+      )
+    );
+
+    // Mock console.error to prevent test output pollution
+    jest.spyOn(console, "error").mockImplementation(() => {});
+
+    const response = await GET(req);
+
+    // Verify error was logged
+    expect(console.error).toHaveBeenCalledWith(
+      "Token verification error:",
+      expect.any(Error)
+    );
+
+    // Verify response
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({
+      valid: false,
+      message: "Failed to verify token",
     });
-
-    const { req, res } = createMockRequestResponse({
-      method: 'POST',
-      url: '/api/auth/verify-reset-token',
-      headers: {
-        'content-type': 'application/json'
-      },
-      body: { token: mockToken }
-    });
-
-    await mockPost(req);
-    
-    expect(res.status).toBe(500);
   });
-}); 
+});

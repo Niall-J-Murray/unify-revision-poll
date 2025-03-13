@@ -1,150 +1,308 @@
 // Import the helpers first
-import { mockPrisma } from '../../helpers/prisma-mock';
+import { mockPrisma } from "../../helpers/prisma-mock";
+import {
+  createMockRequest,
+  mockAuthenticatedSession,
+  mockUnauthenticatedSession,
+  assertResponse,
+} from "../../helpers/api-test-helpers";
+import { NextResponse } from "next/server";
+import { getServerSession } from "next-auth/next";
+import { PrismaClient } from "@prisma/client";
+import { createMockNextRequest } from "../../helpers/next-request-helpers";
 
 // Need to move the jest.mock calls to the top before any imports
-jest.mock('@/app/api/admin/users/route');
-jest.mock('next-auth/next');
-jest.mock('@/lib/prisma');
+jest.mock("next-auth/next");
+jest.mock("@/lib/prisma");
 
-// Import the mocked module
-import { GET } from '@/app/api/admin/users/route';
+// Mock dependencies
+jest.mock("@/lib/prisma", () => ({
+  prisma: mockPrisma,
+}));
 
-describe('Admin Users API', () => {
+// Mock NextAuth
+jest.mock("next-auth/next", () => ({
+  getServerSession: jest.fn(),
+}));
+
+// Mock NextResponse and NextRequest
+jest.mock("next/server", () => ({
+  NextResponse: {
+    json: jest.fn((data, options = { status: 200 }) => {
+      const response = {
+        status: options.status,
+        json: async () => data,
+        ...data,
+      };
+      return response;
+    }),
+  },
+}));
+
+// Mock authOptions
+jest.mock("@/app/api/auth/[...nextauth]/route", () => ({
+  authOptions: {
+    providers: [],
+    callbacks: {},
+  },
+}));
+
+// Import the actual route handlers
+import { GET, POST } from "@/app/api/admin/users/route";
+
+// Mock Prisma client
+const mockPrismaClient = {
+  user: {
+    findMany: jest.fn(),
+    findUnique: jest.fn(),
+    create: jest.fn(),
+  },
+};
+
+jest.mock("@prisma/client", () => ({
+  PrismaClient: jest.fn().mockImplementation(() => mockPrismaClient),
+}));
+
+describe("Admin Users API", () => {
   // Reset all mocks before each test
   beforeEach(() => {
-    jest.resetAllMocks();
+    jest.clearAllMocks();
   });
-  
-  describe('GET /api/admin/users', () => {
-    it('should return 401 if user is not authenticated', async () => {
-      // Mock no session
-      require('next-auth/next').getServerSession.mockResolvedValueOnce(null);
-      
-      // Create mock return objects
-      const mockResult = {
-        status: 401,
-        json: async () => ({ message: 'Unauthorized' })
-      };
-      
-      // Set up the mock implementation
-      GET.mockResolvedValueOnce(mockResult);
-      
-      // The request won't actually be used since we're mocking the route handler
-      const result = await GET();
-      
-      expect(result.status).toBe(401);
-      expect(await result.json()).toEqual({ message: 'Unauthorized' });
+
+  describe("GET /api/admin/users", () => {
+    it("should return 403 if user is not an admin", async () => {
+      // Mock authenticated session but not as admin
+      mockAuthenticatedSession("USER");
+
+      const req = createMockNextRequest({});
+
+      const response = await GET(req);
+      expect(response.status).toBe(403);
+
+      const data = await response.json();
+      expect(data.success).toBe(false);
+      expect(data.message).toBe("Unauthorized");
     });
-    
-    it('should return 403 if user is not an admin', async () => {
-      // Mock non-admin session
-      require('next-auth/next').getServerSession.mockResolvedValueOnce({
-        user: {
-          id: 'regular-user-id',
-          email: 'user@example.com',
-          name: 'Regular User',
-          role: 'USER',
-        },
-      });
-      
-      // Create mock return objects
-      const mockResult = {
-        status: 403,
-        json: async () => ({ message: 'Forbidden: Admin access required' })
-      };
-      
-      // Set up the mock implementation
-      GET.mockResolvedValueOnce(mockResult);
-      
-      // The request won't actually be used since we're mocking the route handler
-      const result = await GET();
-      
-      expect(result.status).toBe(403);
-      expect(await result.json()).toEqual({ message: 'Forbidden: Admin access required' });
+
+    it("should return 403 if user is not authenticated", async () => {
+      // Mock unauthenticated session
+      mockUnauthenticatedSession();
+
+      const req = createMockNextRequest({});
+
+      const response = await GET(req);
+      expect(response.status).toBe(403);
+
+      const data = await response.json();
+      expect(data.success).toBe(false);
+      expect(data.message).toBe("Unauthorized");
     });
-    
-    it('should return a list of users for admin', async () => {
-      // Mock the session with admin role
-      require('next-auth/next').getServerSession.mockResolvedValueOnce({
-        user: {
-          id: 'admin-user-id',
-          email: 'admin@example.com',
-          name: 'Admin User',
-          role: 'ADMIN',
-        },
-      });
-      
+
+    it("should return a list of users for admin", async () => {
+      // Mock admin session
+      mockAuthenticatedSession("ADMIN");
+
+      // Mock users data
       const mockUsers = [
         {
-          id: 'user-1',
-          name: 'Admin User',
-          email: 'admin@example.com',
+          id: "user-1",
+          name: "Test User",
+          email: "test@example.com",
           emailVerified: new Date(),
-          role: 'ADMIN',
+          role: "USER",
           createdAt: new Date(),
+          updatedAt: new Date(),
+          password: "$2a$10$mockhashedpassword",
         },
-        {
-          id: 'user-2',
-          name: 'Regular User',
-          email: 'user@example.com',
-          emailVerified: new Date(),
-          role: 'USER',
-          createdAt: new Date(),
-        }
       ];
-      
-      // Mock Prisma to return users
+
       mockPrisma.user.findMany.mockResolvedValueOnce(mockUsers);
-      
-      // Create mock return objects
-      const mockResult = {
-        status: 200,
-        json: async () => ({ users: mockUsers })
-      };
-      
-      // Set up the mock implementation
-      GET.mockResolvedValueOnce(mockResult);
-      
-      // The request won't actually be used since we're mocking the route handler
-      const result = await GET();
-      
-      expect(result.status).toBe(200);
-      
-      const data = await result.json();
-      expect(data).toHaveProperty('users');
-      expect(data.users).toHaveLength(2);
-      expect(data.users[0]).toHaveProperty('id', 'user-1');
-      expect(data.users[1]).toHaveProperty('id', 'user-2');
-    });
-    
-    it('should handle database errors', async () => {
-      // Mock the session with admin role
-      require('next-auth/next').getServerSession.mockResolvedValueOnce({
-        user: {
-          id: 'admin-user-id',
-          email: 'admin@example.com',
-          name: 'Admin User',
-          role: 'ADMIN',
+
+      const req = createMockNextRequest({});
+
+      const response = await GET(req);
+      expect(response.status).toBe(200);
+
+      const data = await response.json();
+      expect(data.success).toBe(true);
+      expect(data.users).toEqual(mockUsers);
+
+      // Verify Prisma was called with correct parameters
+      expect(mockPrisma.user.findMany).toHaveBeenCalledWith({
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          emailVerified: true,
+          role: true,
+          createdAt: true,
+        },
+        orderBy: {
+          createdAt: "desc",
         },
       });
-      
-      // Mock Prisma to throw an error
-      mockPrisma.user.findMany.mockRejectedValueOnce(new Error('Database error'));
-      
-      // Create mock return objects
-      const mockResult = {
-        status: 500,
-        json: async () => ({ message: 'Failed to fetch users' })
-      };
-      
-      // Set up the mock implementation
-      GET.mockResolvedValueOnce(mockResult);
-      
-      // The request won't actually be used since we're mocking the route handler
-      const result = await GET();
-      
-      expect(result.status).toBe(500);
-      expect(await result.json()).toEqual({ message: 'Failed to fetch users' });
+    });
+
+    it("should handle database errors", async () => {
+      // Mock admin session
+      mockAuthenticatedSession("ADMIN");
+
+      // Mock database error
+      mockPrisma.user.findMany.mockRejectedValueOnce(
+        new Error("Database error")
+      );
+
+      const req = createMockNextRequest({});
+
+      const response = await GET(req);
+      expect(response.status).toBe(500);
+
+      const data = await response.json();
+      expect(data.success).toBe(false);
+      expect(data.message).toBe("Failed to fetch users");
     });
   });
-}); 
+
+  describe("POST /api/admin/users", () => {
+    it("should return 403 if user is not an admin", async () => {
+      // Mock authenticated session but not as admin
+      mockAuthenticatedSession("USER");
+
+      const req = createMockNextRequest({
+        method: "POST",
+        body: {
+          name: "New User",
+          email: "newuser@example.com",
+          password: "password123",
+        },
+      });
+
+      const response = await POST(req);
+      expect(response.status).toBe(403);
+
+      const data = await response.json();
+      expect(data.success).toBe(false);
+      expect(data.message).toBe("Unauthorized");
+    });
+
+    it("should validate required fields", async () => {
+      // Mock admin session
+      mockAuthenticatedSession("ADMIN");
+
+      const req = createMockNextRequest({
+        method: "POST",
+        body: {
+          name: "New User",
+          // Missing email and password
+        },
+      });
+
+      const response = await POST(req);
+      expect(response.status).toBe(400);
+
+      const data = await response.json();
+      expect(data.success).toBe(false);
+      expect(data.message).toBe("Email and password are required");
+    });
+
+    it("should check for existing users", async () => {
+      // Mock admin session
+      mockAuthenticatedSession("ADMIN");
+
+      // Mock existing user
+      mockPrisma.user.findUnique.mockResolvedValueOnce({
+        id: "existing-user",
+        email: "existing@example.com",
+      });
+
+      const req = createMockNextRequest({
+        method: "POST",
+        body: {
+          name: "New User",
+          email: "existing@example.com",
+          password: "password123",
+        },
+      });
+
+      const response = await POST(req);
+      expect(response.status).toBe(400);
+
+      const data = await response.json();
+      expect(data.success).toBe(false);
+      expect(data.message).toBe("Email already in use");
+    });
+
+    it("should create a new user successfully", async () => {
+      // Mock admin session
+      mockAuthenticatedSession("ADMIN");
+
+      // Mock no existing user
+      mockPrisma.user.findUnique.mockResolvedValueOnce(null);
+
+      // Mock user creation
+      const mockNewUser = {
+        id: "new-user",
+        name: "New User",
+        email: "newuser@example.com",
+        role: "USER",
+        emailVerified: new Date(),
+        createdAt: new Date(),
+      };
+
+      mockPrisma.user.create.mockResolvedValueOnce(mockNewUser);
+
+      const requestBody = {
+        name: "New User",
+        email: "newuser@example.com",
+        password: "password123",
+      };
+
+      const req = createMockNextRequest({
+        method: "POST",
+        body: requestBody,
+      });
+
+      const response = await POST(req);
+      expect(response.status).toBe(201);
+
+      const data = await response.json();
+      expect(data.success).toBe(true);
+      expect(data.message).toBe("User created successfully");
+      expect(data.user).toEqual({
+        id: mockNewUser.id,
+        name: mockNewUser.name,
+        email: mockNewUser.email,
+        role: mockNewUser.role,
+      });
+    });
+
+    it("should handle database errors during creation", async () => {
+      // Mock admin session
+      mockAuthenticatedSession("ADMIN");
+
+      // Mock no existing user
+      mockPrisma.user.findUnique.mockResolvedValueOnce(null);
+
+      // Mock database error during creation
+      mockPrisma.user.create.mockRejectedValueOnce(new Error("Database error"));
+
+      const requestBody = {
+        name: "New User",
+        email: "newuser@example.com",
+        password: "password123",
+      };
+
+      const req = createMockNextRequest({
+        method: "POST",
+        body: requestBody,
+      });
+
+      const response = await POST(req);
+      expect(response.status).toBe(500);
+
+      const data = await response.json();
+      expect(data.success).toBe(false);
+      expect(data.message).toBe("Failed to create user");
+    });
+  });
+});

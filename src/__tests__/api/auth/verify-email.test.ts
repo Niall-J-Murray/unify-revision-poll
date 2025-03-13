@@ -1,152 +1,195 @@
-import { NextRequest } from 'next/server';
-import { createMockRequestResponse } from '../../helpers/next-request-helpers';
-import { mockPrisma } from '../../helpers/prisma-mock';
+import { NextRequest, NextResponse } from "next/server";
+import { mockPrisma } from "../../helpers/prisma-mock";
+import * as crypto from "crypto";
 
-// Mock the GET function from the verify-email route module
-const mockGet = jest.fn();
-jest.mock('@/app/api/auth/verify-email/route', () => ({
-  GET: mockGet
+// Mock dependencies
+jest.mock("@/lib/prisma", () => ({
+  prisma: mockPrisma,
 }));
 
-// Mock Prisma
-jest.mock('@/lib/prisma', () => ({
-  __esModule: true,
-  default: mockPrisma
+// Mock crypto
+jest.mock("crypto", () => ({
+  createHash: jest.fn().mockReturnValue({
+    update: jest.fn().mockReturnThis(),
+    digest: jest.fn().mockReturnValue("hashed-token-123"),
+  }),
 }));
 
-describe('Verify Email API', () => {
-  const mockToken = 'valid-verification-token';
-  const mockUserId = 'user-123';
-  
+// Mock NextResponse.redirect
+jest.mock("next/server", () => {
+  const originalModule = jest.requireActual("next/server");
+  return {
+    ...originalModule,
+    NextResponse: {
+      ...originalModule.NextResponse,
+      redirect: jest.fn().mockImplementation((url) => ({
+        url,
+        status: 302,
+        headers: new Headers({ Location: url.toString() }),
+      })),
+    },
+  };
+});
+
+// Import the route handler after mocking dependencies
+import {
+  GET,
+  generateVerificationToken,
+} from "@/app/api/auth/verify-email/route";
+
+describe("Verify Email API", () => {
+  const mockToken = "valid-verification-token";
+  const mockUserId = "user-123";
+
   beforeEach(() => {
     jest.clearAllMocks();
   });
 
-  it('should return 400 if token is missing', async () => {
-    mockGet.mockImplementation(async () => {
-      return {
-        status: 400,
-        json: async () => ({ 
-          success: false, 
-          message: 'Verification token is required' 
-        })
-      };
-    });
+  it("should redirect to login with error if token is missing", async () => {
+    // Create request with missing token
+    const req = new NextRequest(
+      new URL("http://localhost:3000/api/auth/verify-email")
+    );
 
-    const { req, res } = createMockRequestResponse({
-      method: 'GET',
-      url: '/api/auth/verify-email',
-      headers: {}
-    });
+    const response = await GET(req);
 
-    await mockGet(req);
-    
-    expect(res.status).toBe(400);
+    // Verify redirect
+    expect(NextResponse.redirect).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pathname: "/login",
+        search: "?error=invalid-token",
+      })
+    );
+
+    // Verify response
+    expect(response.headers.get("Location")).toContain(
+      "/login?error=invalid-token"
+    );
   });
 
-  it('should return 400 if token is invalid or expired', async () => {
-    mockPrisma.emailVerification.findUnique.mockResolvedValueOnce(null);
+  it("should redirect to login with error if token is invalid or expired", async () => {
+    // Mock user not found
+    mockPrisma.user.findFirst.mockResolvedValueOnce(null);
 
-    mockGet.mockImplementation(async () => {
-      return {
-        status: 400,
-        json: async () => ({ 
-          success: false, 
-          message: 'Invalid or expired verification token' 
-        })
-      };
+    // Create request with token
+    const req = new NextRequest(
+      new URL(`http://localhost:3000/api/auth/verify-email?token=invalid-token`)
+    );
+
+    const response = await GET(req);
+
+    // Verify Prisma was called with correct parameters
+    expect(mockPrisma.user.findFirst).toHaveBeenCalledWith({
+      where: {
+        emailVerificationToken: "invalid-token",
+        emailVerificationExpires: {
+          gt: expect.any(Date),
+        },
+      },
     });
 
-    const { req, res } = createMockRequestResponse({
-      method: 'GET',
-      url: '/api/auth/verify-email?token=invalid-token',
-      headers: {}
-    });
+    // Verify redirect
+    expect(NextResponse.redirect).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pathname: "/login",
+        search: "?error=invalid-token",
+      })
+    );
 
-    await mockGet(req);
-    
-    expect(res.status).toBe(400);
+    // Verify response
+    expect(response.headers.get("Location")).toContain(
+      "/login?error=invalid-token"
+    );
   });
 
-  it('should successfully verify email', async () => {
-    const expiryDate = new Date();
-    expiryDate.setHours(expiryDate.getHours() + 1); // Still valid
-
-    mockPrisma.emailVerification.findUnique.mockResolvedValueOnce({
-      id: 'verif-1',
-      token: mockToken,
-      userId: mockUserId,
-      expiresAt: expiryDate,
-      createdAt: new Date()
+  it("should verify email successfully with valid token", async () => {
+    // Mock user found
+    mockPrisma.user.findFirst.mockResolvedValueOnce({
+      id: mockUserId,
+      email: "user@example.com",
+      emailVerificationToken: mockToken,
+      emailVerificationExpires: new Date(Date.now() + 3600000), // 1 hour in the future
     });
 
+    // Mock user update
     mockPrisma.user.update.mockResolvedValueOnce({
       id: mockUserId,
-      email: 'user@example.com',
-      emailVerified: new Date()
+      email: "user@example.com",
     });
 
-    mockPrisma.emailVerification.delete.mockResolvedValueOnce({
-      id: 'verif-1',
-      token: mockToken,
-      userId: mockUserId,
-      expiresAt: expiryDate,
-      createdAt: new Date()
+    // Create request with token
+    const req = new NextRequest(
+      new URL(`http://localhost:3000/api/auth/verify-email?token=${mockToken}`)
+    );
+
+    const response = await GET(req);
+
+    // Verify user was updated as verified
+    expect(mockPrisma.user.update).toHaveBeenCalledWith({
+      where: { id: mockUserId },
+      data: {
+        emailVerified: expect.any(Date),
+        emailVerificationToken: null,
+        emailVerificationExpires: null,
+      },
     });
 
-    mockGet.mockImplementation(async () => {
-      return {
-        status: 200,
-        json: async () => ({ 
-          success: true, 
-          message: 'Email verified successfully' 
-        })
-      };
-    });
+    // Verify redirect
+    expect(NextResponse.redirect).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pathname: "/login",
+        search: "?verified=true",
+      })
+    );
 
-    const { req, res } = createMockRequestResponse({
-      method: 'GET',
-      url: `/api/auth/verify-email?token=${mockToken}`,
-      headers: {}
-    });
-
-    await mockGet(req);
-    
-    expect(res.status).toBe(200);
+    // Verify response
+    expect(response.headers.get("Location")).toContain("/login?verified=true");
   });
 
-  it('should handle database errors', async () => {
-    const expiryDate = new Date();
-    expiryDate.setHours(expiryDate.getHours() + 1); // Still valid
+  it("should redirect to login with error on database error", async () => {
+    // Mock database error
+    mockPrisma.user.findFirst.mockRejectedValueOnce(
+      new Error("Database error")
+    );
 
-    mockPrisma.emailVerification.findUnique.mockResolvedValueOnce({
-      id: 'verif-1',
-      token: mockToken,
-      userId: mockUserId,
-      expiresAt: expiryDate,
-      createdAt: new Date()
-    });
+    // Create request with token
+    const req = new NextRequest(
+      new URL(`http://localhost:3000/api/auth/verify-email?token=${mockToken}`)
+    );
 
-    mockPrisma.user.update.mockRejectedValueOnce(new Error('Database error'));
+    // Mock console.error to prevent test output pollution
+    jest.spyOn(console, "error").mockImplementation(() => {});
 
-    mockGet.mockImplementation(async () => {
-      return {
-        status: 500,
-        json: async () => ({ 
-          success: false, 
-          message: 'Failed to verify email' 
-        })
-      };
-    });
+    const response = await GET(req);
 
-    const { req, res } = createMockRequestResponse({
-      method: 'GET',
-      url: `/api/auth/verify-email?token=${mockToken}`,
-      headers: {}
-    });
+    // Verify error was logged
+    expect(console.error).toHaveBeenCalledWith(
+      "Email verification error:",
+      expect.any(Error)
+    );
 
-    await mockGet(req);
-    
-    expect(res.status).toBe(500);
+    // Verify redirect
+    expect(NextResponse.redirect).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pathname: "/login",
+        search: "?error=verification-failed",
+      })
+    );
+
+    // Verify response
+    expect(response.headers.get("Location")).toContain(
+      "/login?error=verification-failed"
+    );
   });
-}); 
+
+  it("should generate a verification token", () => {
+    const email = "user@example.com";
+    const token = generateVerificationToken(email);
+
+    // Verify crypto was called with correct parameters
+    expect(crypto.createHash).toHaveBeenCalledWith("sha256");
+
+    // Verify token is returned
+    expect(token).toBe("hashed-token-123");
+  });
+});

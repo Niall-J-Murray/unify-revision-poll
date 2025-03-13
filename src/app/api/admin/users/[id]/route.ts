@@ -9,7 +9,7 @@ export async function DELETE(
 ) {
   try {
     const session = await getServerSession(authOptions);
-    
+
     if (!session?.user || session.user.role !== "ADMIN") {
       return NextResponse.json(
         { success: false, message: "Unauthorized" },
@@ -30,4 +30,4 @@ export async function DELETE(
       { status: 500 }
     );
   }
-} 
+}
