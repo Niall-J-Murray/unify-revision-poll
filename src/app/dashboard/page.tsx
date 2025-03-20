@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import Link from "next/link";
 import DashboardLayout from "@/app/components/dashboard-layout";
 import {
   FiUser,
@@ -11,6 +10,17 @@ import {
   FiActivity,
   FiClock,
 } from "react-icons/fi";
+
+// Define the Activity type
+interface Activity {
+  id: string;
+  createdAt: string;
+  type: string;
+  featureRequest: {
+    title: string;
+  };
+  deletedRequestTitle?: string; // Optional if it may not exist
+}
 
 export default function Dashboard() {
   const [userData, setUserData] = useState<{
@@ -24,7 +34,7 @@ export default function Dashboard() {
   } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [activities, setActivities] = useState([]);
+  const [activities, setActivities] = useState<Activity[]>([]);
 
   useEffect(() => {
     const fetchUserData = async () => {
@@ -38,8 +48,11 @@ export default function Dashboard() {
           const votesData = await votesResponse.json();
 
           // Fetch the number of feature requests for the user
-          const featureRequestCountResponse = await fetch(`/api/user/${data.user.id}/feature-requests/count`);
-          const featureRequestCountData = await featureRequestCountResponse.json();
+          const featureRequestCountResponse = await fetch(
+            `/api/user/${data.user.id}/feature-requests/count`
+          );
+          const featureRequestCountData =
+            await featureRequestCountResponse.json();
 
           if (votesResponse.ok && featureRequestCountResponse.ok) {
             setUserData({
@@ -57,13 +70,17 @@ export default function Dashboard() {
           }
 
           // Fetch user activity
-          const activityResponse = await fetch(`/api/user/${data.user.id}/activity`);
+          const activityResponse = await fetch(
+            `/api/user/${data.user.id}/activity`
+          );
           const activityData = await activityResponse.json();
 
           if (activityResponse.ok) {
             setActivities(activityData);
           } else {
-            console.error(activityData.message || "Failed to load user activity");
+            console.error(
+              activityData.message || "Failed to load user activity"
+            );
           }
         } else {
           setError(data.message || "Failed to load user data");
@@ -105,13 +122,17 @@ export default function Dashboard() {
             Welcome, {displayName}!
           </h2>
           <p className="text-github-secondary dark:text-github-dark-secondary mb-2">
-            This application allows you to manage feature requests effectively. You can create new requests, vote on existing ones, and track their status.
+            This application allows you to manage feature requests effectively.
+            You can create new requests, vote on existing ones, and track their
+            status.
           </p>
           <p className="text-github-secondary dark:text-github-dark-secondary mb-2">
-            Click the "Feature Requests" button on the left to view, vote, or create new feature requests.
+            Click the "Feature Requests" button on the left to view, vote, or
+            create new feature requests.
           </p>
           <p className="text-github-secondary dark:text-github-dark-secondary">
-            Use the navigation to explore requests, filter by status, and see your voting history. Your feedback helps improve the application!
+            Use the navigation to explore requests, filter by status, and see
+            your voting history. Your feedback helps improve the application!
           </p>
         </div>
 
@@ -151,7 +172,9 @@ export default function Dashboard() {
                   <p className="text-sm text-github-secondary dark:text-github-dark-secondary">
                     Feature Requests
                   </p>
-                  <p className="font-medium">{userData?.featureRequestCount || 0}</p>
+                  <p className="font-medium">
+                    {userData?.featureRequestCount || 0}
+                  </p>
                 </div>
               </div>
             </div>
@@ -174,28 +197,33 @@ export default function Dashboard() {
           ) : (
             <div className="space-y-4">
               {activities.length === 0 ? (
-                <p className="text-gray-500 dark:text-gray-400">No recent activity found.</p>
+                <p className="text-gray-500 dark:text-gray-400">
+                  No recent activity found.
+                </p>
               ) : (
                 activities.map((activity) => (
-                  <div key={activity.id} className="border-l-2 border-github-primary dark:border-github-dark-primary pl-4 py-2">
+                  <div
+                    key={activity.id}
+                    className="border-l-2 border-github-primary dark:border-github-dark-primary pl-4 py-2"
+                  >
                     <div className="flex items-center text-sm text-github-secondary dark:text-github-dark-secondary mb-1">
                       <FiClock className="mr-2" />
-                      <span>{new Date(activity.createdAt).toLocaleDateString()}</span>
+                      <span>
+                        {new Date(activity.createdAt).toLocaleDateString()}
+                      </span>
                     </div>
                     <p className="text-github-fg dark:text-github-dark-fg">
-                      {activity.type === 'created' ? (
-                        `Created feature request: ${activity.featureRequest.title}`
-                      ) : activity.type === 'voted' ? (
-                        `Voted for feature request: ${activity.featureRequest.title}`
-                      ) : activity.type === 'unvoted' ? (
-                        `Removed vote from feature request: ${activity.featureRequest.title}`
-                      ) : activity.type === 'edited' ? (
-                        `Edited feature request: ${activity.featureRequest.title}`
-                      ) : activity.type === 'deleted' ? (
-                        `Deleted feature request: ${activity.deletedRequestTitle}`
-                      ) : (
-                        `Status changed for feature request: ${activity.featureRequest.title}`
-                      )}
+                      {activity.type === "created"
+                        ? `Created feature request: ${activity.featureRequest.title}`
+                        : activity.type === "voted"
+                        ? `Voted for feature request: ${activity.featureRequest.title}`
+                        : activity.type === "unvoted"
+                        ? `Removed vote from feature request: ${activity.featureRequest.title}`
+                        : activity.type === "edited"
+                        ? `Edited feature request: ${activity.featureRequest.title}`
+                        : activity.type === "deleted"
+                        ? `Deleted feature request: ${activity.deletedRequestTitle}`
+                        : `Status changed for feature request: ${activity.featureRequest.title}`}
                     </p>
                   </div>
                 ))
