@@ -4,119 +4,77 @@ $ProjectRoot = Split-Path -Parent (Split-Path -Parent $ScriptDir)
 
 # Source the variables file
 . "$ScriptDir\01-setup-variables.ps1"
+. "$PSScriptRoot\rds-config.ps1" # Source RDS config
 
-Write-Host "Creating secrets for environment variables..."
+Write-Host "Creating/Updating SSM Parameters..."
 
-# Check if .env.local exists
-$envFile = Join-Path $ProjectRoot ".env.local"
-if (Test-Path $envFile) {
-    Write-Host "Found .env.local file. Reading environment variables..."
-    Get-Content $envFile | ForEach-Object {
-        if ($_ -match '^([^=]+)=(.*)$') {
-            $key = $matches[1]
-            $value = $matches[2]
-            Set-Item -Path "env:$key" -Value $value
-        }
-    }
+# Construct DATABASE_URL and DIRECT_URL
+if ([string]::IsNullOrWhiteSpace($env:RDS_ENDPOINT)) {
+    Write-Error "Error: RDS_ENDPOINT not found in environment variables or rds-config.ps1"
+    exit 1
 }
-else {
-    Write-Host "Warning: .env.local file not found. Using existing secret values or creating with defaults."
-}
+$DatabaseUrl = "postgresql://$($env:DB_USERNAME):$($env:DB_PASSWORD)@$($env:RDS_ENDPOINT):5432/$($env:DB_NAME)?schema=public"
+$DirectUrl = $DatabaseUrl
 
-# Set a default NEXTAUTH_SECRET if not provided
-if (-not $env:NEXTAUTH_SECRET) {
-    $env:NEXTAUTH_SECRET = "this-is-a-secret-value-for-nextauth"
-}
+# Construct App URL
+$AppUrl = "https://$($env:SUBDOMAIN).$($env:DOMAIN_NAME)"
 
-# Create a JSON object with all environment variables
-$envVars = @{
-    DATABASE_URL          = $env:DATABASE_URL
-    DIRECT_URL            = $env:DIRECT_URL
-    NEXT_PUBLIC_APP_URL   = "https://${SUBDOMAIN}.${DOMAIN_NAME}"
-    NEXTAUTH_URL          = "https://${SUBDOMAIN}.${DOMAIN_NAME}"
-    NEXTAUTH_SECRET       = $env:NEXTAUTH_SECRET
-    EMAIL_SERVER_HOST     = $env:EMAIL_SERVER_HOST
-    EMAIL_SERVER_PORT     = $env:EMAIL_SERVER_PORT
-    EMAIL_SERVER_USER     = $env:EMAIL_SERVER_USER
-    EMAIL_SERVER_PASSWORD = $env:EMAIL_SERVER_PASSWORD
-    EMAIL_FROM            = $env:EMAIL_FROM
-    GOOGLE_CLIENT_ID      = $env:GOOGLE_CLIENT_ID
-    GOOGLE_CLIENT_SECRET  = $env:GOOGLE_CLIENT_SECRET
-    GITHUB_ID             = $env:GITHUB_ID
-    GITHUB_SECRET         = $env:GITHUB_SECRET
-    NODE_ENV              = "production"
+# Generate NEXTAUTH_SECRET if not provided
+if ([string]::IsNullOrWhiteSpace($env:NEXTAUTH_SECRET)) {
+    Write-Host "Generating NEXTAUTH_SECRET..."
+    $bytes = New-Object Byte[] 32
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    $rng.GetBytes($bytes)
+    $env:NEXTAUTH_SECRET = ($bytes | ForEach-Object { $_.ToString("x2") }) -join ''
 }
 
-# Convert to JSON
-$envVarsJson = $envVars | ConvertTo-Json
+# Define parameter name prefix (using hyphens)
+$ParamNamePrefix = $env:APP_NAME # e.g., feature-poll
 
-# Check if secret already exists
-$secretExists = $false
-try {
-    $existingSecret = aws secretsmanager describe-secret --secret-id "${APP_NAME}-env-vars" --region $AWS_REGION 2>$null
-    if ($existingSecret) {
-        $secretExists = $true
-        $SECRET_ARN = ($existingSecret | ConvertFrom-Json).ARN
-        Write-Host "Secret '${APP_NAME}-env-vars' already exists with ARN: $SECRET_ARN"
-    }
-}
-catch {
-    # Secret doesn't exist, we'll create it
-    $secretExists = $false
-}
-
-# Create or update the secret
-if (-not $secretExists) {
-    # Create the secret
-    try {
-        $SECRET_ARN = (aws secretsmanager create-secret `
-                --name "${APP_NAME}-env-vars" `
-                --description "Environment variables for ${APP_NAME}" `
-                --secret-string $envVarsJson `
-                --query 'ARN' `
-                --output text `
-                --region $AWS_REGION)
-        
-        Write-Host "Created secret with environment variables: ${APP_NAME}-env-vars"
-        Write-Host "Secret ARN: $SECRET_ARN"
-    }
-    catch {
-        Write-Host "Failed to create secret: $_"
-        # Try to get the ARN if it failed because the secret already exists
-        try {
-            $existingSecret = aws secretsmanager describe-secret --secret-id "${APP_NAME}-env-vars" --region $AWS_REGION 2>$null
-            $SECRET_ARN = ($existingSecret | ConvertFrom-Json).ARN
-            Write-Host "Retrieved existing secret ARN: $SECRET_ARN"
-        }
-        catch {
-            Write-Host "Failed to retrieve secret ARN. Using dummy ARN for testing."
-            $SECRET_ARN = "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${APP_NAME}-env-vars-xxxxxx"
-        }
-    }
-}
-else {
-    # Update the existing secret
-    try {
-        aws secretsmanager update-secret `
-            --secret-id "${APP_NAME}-env-vars" `
-            --description "Environment variables for ${APP_NAME}" `
-            --secret-string $envVarsJson `
-            --region $AWS_REGION | Out-Null
-        
-        Write-Host "Updated secret with environment variables: ${APP_NAME}-env-vars"
-    }
-    catch {
-        Write-Host "Failed to update secret: $_"
-    }
+# Function to put/update a parameter
+function Set-SsmParameter {
+    param(
+        [string]$NameSuffix,
+        [string]$Value,
+        [string]$Type = "SecureString" # Default to SecureString
+    )
+    $paramName = "$ParamNamePrefix-$NameSuffix" # e.g., feature-poll-DATABASE_URL
+    Write-Host "Putting parameter: $paramName"
+    $command = "aws ssm put-parameter --name `"$paramName`" --value `"$Value`" --type `"$Type`" --overwrite --region $($env:AWS_REGION)"
+    Invoke-AWSCommand -Command $command
+    if ($LASTEXITCODE -ne 0) { Write-Error "Failed to put parameter $paramName"; exit 1 }
 }
 
-# Save the secret ARN to a configuration file
-$SecretConfig = @"
-# Secrets Configuration
-`$env:SECRET_ARN = "$SECRET_ARN"
-"@
+# Put parameters
+Set-SsmParameter -NameSuffix "DATABASE_URL" -Value $DatabaseUrl -Type "SecureString"
+Set-SsmParameter -NameSuffix "DIRECT_URL" -Value $DirectUrl -Type "SecureString"
+Set-SsmParameter -NameSuffix "NEXT_PUBLIC_APP_URL" -Value $AppUrl -Type "String"
+Set-SsmParameter -NameSuffix "NEXTAUTH_URL" -Value $AppUrl -Type "String"
+Set-SsmParameter -NameSuffix "NEXTAUTH_SECRET" -Value $env:NEXTAUTH_SECRET -Type "SecureString"
 
-$SecretConfig | Out-File -FilePath "$ScriptDir\secrets-config.ps1" -Encoding UTF8
+# Add placeholders for email/OAuth if needed
+Set-SsmParameter -NameSuffix "EMAIL_SERVER_HOST" -Value ($env:EMAIL_SERVER_HOST -if $null {'smtp.example.com'}) -Type "String"
+Set-SsmParameter -NameSuffix "EMAIL_SERVER_PORT" -Value ($env:EMAIL_SERVER_PORT -if $null {'587'}) -Type "String"
+Set-SsmParameter -NameSuffix "EMAIL_SERVER_USER" -Value ($env:EMAIL_SERVER_USER -if $null {'user@example.com'}) -Type "String"
+Set-SsmParameter -NameSuffix "EMAIL_SERVER_PASSWORD" -Value ($env:EMAIL_SERVER_PASSWORD -if $null {'your_email_password'}) -Type "SecureString"
+Set-SsmParameter -NameSuffix "EMAIL_FROM" -Value ($env:EMAIL_FROM -if $null {"noreply@$($env:DOMAIN_NAME)"}) -Type "String"
 
-Write-Host "Secrets configuration saved to $ScriptDir\secrets-config.ps1"
-Write-Host "Secrets creation completed" 
+Set-SsmParameter -NameSuffix "GOOGLE_CLIENT_ID" -Value ($env:GOOGLE_CLIENT_ID -if $null {'your_google_client_id'}) -Type "SecureString"
+Set-SsmParameter -NameSuffix "GOOGLE_CLIENT_SECRET" -Value ($env:GOOGLE_CLIENT_SECRET -if $null {'your_google_client_secret'}) -Type "SecureString"
+Set-SsmParameter -NameSuffix "GITHUB_ID" -Value ($env:GITHUB_ID -if $null {'your_github_id'}) -Type "SecureString"
+Set-SsmParameter -NameSuffix "GITHUB_SECRET" -Value ($env:GITHUB_SECRET -if $null {'your_github_secret'}) -Type "SecureString"
+
+Set-SsmParameter -NameSuffix "NODE_ENV" -Value "production" -Type "String"
+
+# Save the parameter name prefix
+$ConfigFilePath = Join-Path -Path $PSScriptRoot -ChildPath "secrets-config.ps1"
+@"
+# SSM Parameter Name Prefix (using hyphens)
+`$SECRET_PARAMETER_NAME_PREFIX = "$ParamNamePrefix"
+
+# Export variable
+`$env:SECRET_PARAMETER_NAME_PREFIX = `$SECRET_PARAMETER_NAME_PREFIX
+"@ | Out-File -FilePath $ConfigFilePath -Encoding utf8
+
+Write-Host "SSM Parameter configuration saved to $ConfigFilePath"
+Write-Host "SSM Parameter setup completed." 

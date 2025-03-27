@@ -93,18 +93,19 @@ if ([string]::IsNullOrWhiteSpace($ALB_DNS_NAME)) {
 }
 
 # Create the A record for the subdomain
-$Route53Change = @"
+$changeBatchJson = @"
 {
+  "Comment": "Create A record alias for $($env:SUBDOMAIN).$($env:DOMAIN_NAME)",
   "Changes": [
     {
-      "Action": "CREATE",
+      "Action": "UPSERT",
       "ResourceRecordSet": {
-        "Name": "${SUBDOMAIN}.${DOMAIN_NAME}",
+        "Name": "$($env:SUBDOMAIN).$($env:DOMAIN_NAME)",
         "Type": "A",
         "AliasTarget": {
-          "HostedZoneId": "${ALB_HOSTED_ZONE_ID}",
-          "DNSName": "${ALB_DNS_NAME}",
-          "EvaluateTargetHealth": true
+          "HostedZoneId": "$($env:ALB_HOSTED_ZONE_ID)", # <-- Use correct variable
+          "DNSName": "$($env:ALB_DNS_NAME)",
+          "EvaluateTargetHealth": $true
         }
       }
     }
@@ -112,21 +113,17 @@ $Route53Change = @"
 }
 "@
 
-# Write to file without BOM - using .NET methods instead of Out-File
-[System.IO.File]::WriteAllText("$ScriptDir\route53-change.json", $Route53Change)
+# Save the change batch to a temporary file
+$tempChangeBatchFile = Join-Path -Path $ScriptDir -ChildPath "route53-change.json"
+$changeBatchJson | Out-File -FilePath $tempChangeBatchFile -Encoding utf8
 
 # Apply the Route 53 change
-try {
-  aws route53 change-resource-record-sets `
-    --hosted-zone-id $HOSTED_ZONE_ID `
-    --change-batch file://"$ScriptDir\route53-change.json" `
-    --region $AWS_REGION
-    
-  Write-Host "Created Route 53 record for ${SUBDOMAIN}.${DOMAIN_NAME}"
-}
-catch {
-  Write-Host "Error creating Route 53 record: $_"
-  exit 1
-}
+$route53Command = "aws route53 change-resource-record-sets --hosted-zone-id $HOSTED_ZONE_ID --change-batch file://$tempChangeBatchFile --region $env:AWS_REGION"
+Invoke-AWSCommand -Command $route53Command
+
+# Remove temporary file
+Remove-Item -Path $tempChangeBatchFile
+
+Write-Host "Created/Updated Route 53 record for $($env:SUBDOMAIN).$($env:DOMAIN_NAME)"
 
 Write-Host "Route 53 record creation completed" 

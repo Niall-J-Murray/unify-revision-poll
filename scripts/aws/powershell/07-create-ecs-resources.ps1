@@ -183,6 +183,11 @@ else {
   Write-Host "Using existing application load balancer: $ALB_ARN"
 }
 
+# ===>>> Get ALB Canonical Hosted Zone ID <<<===
+$albDetailsCommand = "aws elbv2 describe-load-balancers --load-balancer-arns $ALB_ARN --query 'LoadBalancers[0].CanonicalHostedZoneId' --output text --region $AWS_REGION"
+$ALB_HOSTED_ZONE_ID = Invoke-AWSCommand -Command $albDetailsCommand
+Write-Host "ALB Canonical Hosted Zone ID: $ALB_HOSTED_ZONE_ID"
+
 # Get existing target group
 $TARGET_GROUP_ARN = (aws elbv2 describe-target-groups `
     --names ${APP_NAME}-tg `
@@ -568,18 +573,26 @@ catch {
 }
 
 # Save ALB configuration to a file
-$ALBConfig = @"
+$ConfigFilePath = Join-Path -Path $ScriptDir -ChildPath "alb-config.ps1"
+@"
 # ALB Configuration
 `$ALB_ARN = "$ALB_ARN"
 `$ALB_DNS_NAME = "$ALB_DNS_NAME"
 `$TARGET_GROUP_ARN = "$TARGET_GROUP_ARN"
+`$ALB_HOSTED_ZONE_ID = "$ALB_HOSTED_ZONE_ID" # <-- Save the Zone ID
 `$ALB_SG_ID = "$ALB_SG_ID"
 `$ECS_SG_ID = "$ECS_SG_ID"
-"@
 
-$ALBConfig | Out-File -FilePath "$ScriptDir\alb-config.ps1" -Encoding UTF8
+# Export variables
+`$env:ALB_ARN = `$ALB_ARN
+`$env:ALB_DNS_NAME = `$ALB_DNS_NAME
+`$env:TARGET_GROUP_ARN = `$TARGET_GROUP_ARN
+`$env:ALB_HOSTED_ZONE_ID = `$ALB_HOSTED_ZONE_ID # <-- Export the Zone ID
+`$env:ALB_SG_ID = `$ALB_SG_ID
+`$env:ECS_SG_ID = `$ECS_SG_ID
+"@ | Out-File -FilePath $ConfigFilePath -Encoding utf8
 
-Write-Host "ALB configuration saved to $ScriptDir\alb-config.ps1"
+Write-Host "ALB configuration saved to $ConfigFilePath"
 Write-Host "ECS resources creation completed"
 
 # Clean up temporary files

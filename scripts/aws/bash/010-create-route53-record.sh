@@ -27,16 +27,22 @@ fi
 echo "Found hosted zone ID: $HOSTED_ZONE_ID"
 
 # Create the A record for the subdomain
+if [ -z "$ALB_HOSTED_ZONE_ID" ]; then
+    echo "Error: ALB Canonical Hosted Zone ID not found in alb-config.sh. Cannot create Route 53 alias."
+    exit 1
+fi
+
 cat > "$SCRIPT_DIR/route53-change.json" << EOF
 {
+  "Comment": "Create A record alias for ${SUBDOMAIN}.${DOMAIN_NAME}",
   "Changes": [
     {
-      "Action": "CREATE",
+      "Action": "UPSERT", # Use UPSERT to avoid errors if record already exists
       "ResourceRecordSet": {
         "Name": "${SUBDOMAIN}.${DOMAIN_NAME}",
         "Type": "A",
         "AliasTarget": {
-          "HostedZoneId": "${ALB_HOSTED_ZONE_ID}",
+          "HostedZoneId": "${ALB_HOSTED_ZONE_ID}", # <-- Use the correct variable
           "DNSName": "${ALB_DNS_NAME}",
           "EvaluateTargetHealth": true
         }

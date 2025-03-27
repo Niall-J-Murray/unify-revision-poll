@@ -32,95 +32,131 @@ function Invoke-AWSCommand {
     }
 }
 
-Write-Host "Creating RDS PostgreSQL database..."
+Write-Host "Starting RDS creation script..."
 
-# Check if security group exists and get its ID
-$existingSgCommand = "aws ec2 describe-security-groups --filters Name=group-name,Values=${APP_NAME}-rds-sg Name=vpc-id,Values=$VPC_ID --query 'SecurityGroups[0].GroupId' --output text"
-$SECURITY_GROUP_ID = Invoke-Expression $existingSgCommand
+# Check/Create Security Group for RDS
+$DbSgName = "$($env:APP_NAME)-rds-sg"
+Write-Host "Checking for existing DB Security Group: $DbSgName..."
+$SECURITY_GROUP_ID = (aws ec2 describe-security-groups --filters "Name=group-name,Values=$DbSgName" "Name=vpc-id,Values=$($env:VPC_ID)" --query 'SecurityGroups[0].GroupId' --output text --region $env:AWS_REGION 2>$null)
 
-if (-not $SECURITY_GROUP_ID) {
-    # Create new security group if it doesn't exist
-    $sgCommand = "aws ec2 create-security-group --group-name ${APP_NAME}-rds-sg --description 'Security group for RDS' --vpc-id $VPC_ID --query 'GroupId' --output text"
-    $SECURITY_GROUP_ID = Invoke-AWSCommand -Command $sgCommand
-    Write-Host "Created new security group: $SECURITY_GROUP_ID"
-}
-else {
-    Write-Host "Using existing security group: $SECURITY_GROUP_ID"
-}
-
-# Try to add the security group rule, but don't fail if it already exists
-$sgRuleCommand = "aws ec2 authorize-security-group-ingress --group-id $SECURITY_GROUP_ID --protocol tcp --port 5432 --cidr $VPC_CIDR"
-$result = Invoke-AWSCommand -Command $sgRuleCommand -IgnoreErrors
-if ($result) {
-    Write-Host "Added security group rule for PostgreSQL"
-}
-else {
-    Write-Host "Security group rule already exists"
+if ([string]::IsNullOrWhiteSpace($SECURITY_GROUP_ID) -or $SECURITY_GROUP_ID -eq "None") {
+    Write-Host "DB Security Group not found. Creating..."
+    $DbSg = New-EC2SecurityGroup -GroupName $DbSgName -Description "Security group for $($env:APP_NAME) RDS instance" -VpcId $env:VPC_ID -Region $env:AWS_REGION -TagSpecification @{ResourceType="security-group"; Tags=@{Name=$DbSgName; AppName=$env:APP_NAME}}
+    if ($LASTEXITCODE -ne 0) { Write-Error "Failed to create DB Security Group"; exit 1 }
+    $SECURITY_GROUP_ID = $DbSg.GroupId
+    Write-Host "Created DB security group: $SECURITY_GROUP_ID"
+} else {
+    Write-Host "Found existing security group: $SECURITY_GROUP_ID"
 }
 
-# Check if DB subnet group exists
-$existingSubnetGroupCommand = "aws rds describe-db-subnet-groups --db-subnet-group-name ${APP_NAME}-subnet-group --query 'DBSubnetGroups[0].DBSubnetGroupName' --output text"
-$existingSubnetGroup = Invoke-Expression $existingSubnetGroupCommand
+# Configure security group rules
+# REMOVED: Grant-EC2SecurityGroupIngress -GroupId $SECURITY_GROUP_ID -IpProtocol tcp -FromPort $env:DB_PORT -ToPort $env:DB_PORT -CidrIp $env:VPC_CIDR -Region $env:AWS_REGION
+Write-Host "DB Security Group created/verified. Specific ingress rule will be added in ECS script."
 
-if (-not $existingSubnetGroup) {
-    # Create DB subnet group if it doesn't exist
-    $subnetGroupCommand = "aws rds create-db-subnet-group --db-subnet-group-name ${APP_NAME}-subnet-group --subnet-ids $PRIVATE_SUBNET_1_ID $PRIVATE_SUBNET_2_ID --db-subnet-group-description 'Subnet group for RDS' --tags Key=Name,Value=${APP_NAME}-subnet-group"
-    Invoke-AWSCommand -Command $subnetGroupCommand
-    Write-Host "Created new DB subnet group"
+# Check/Update DB subnet group
+$DbSubnetGroupName = "$($env:APP_NAME)-subnet-group"
+Write-Host "Checking/Updating DB Subnet Group: $DbSubnetGroupName..."
+$subnetGroupExists = $false
+try {
+    Get-RDSDbSubnetGroup -DBSubnetGroupName $DbSubnetGroupName -Region $env:AWS_REGION -ErrorAction Stop | Out-Null
+    $subnetGroupExists = $true
+} catch [Amazon.RDS.Model.DBSubnetGroupNotFoundException] {
+    $subnetGroupExists = $false
+} catch {
+    Write-Error "Error checking DB Subnet Group: $_"; exit 1
 }
-else {
-    Write-Host "Using existing DB subnet group"
+
+$subnetIds = @($env:PRIVATE_SUBNET_1_ID, $env:PRIVATE_SUBNET_2_ID)
+if (-not $subnetGroupExists) {
+    Write-Host "DB Subnet Group '$DbSubnetGroupName' not found. Creating..."
+    New-RDSDbSubnetGroup -DBSubnetGroupName $DbSubnetGroupName -DBSubnetGroupDescription "Subnet group for $($env:APP_NAME) RDS instance" -SubnetId $subnetIds -Region $env:AWS_REGION -Tag @{Key="Name";Value=$DbSubnetGroupName},@{Key="AppName";Value=$env:APP_NAME}
+    if ($LASTEXITCODE -ne 0) { Write-Error "Failed to create DB Subnet Group"; exit 1 }
+    Write-Host "DB Subnet Group created."
+} else {
+    Write-Host "DB Subnet Group '$DbSubnetGroupName' already exists. Updating with current private subnets..."
+    Edit-RDSDbSubnetGroup -DBSubnetGroupName $DbSubnetGroupName -SubnetId $subnetIds -DBSubnetGroupDescription "Subnet group for $($env:APP_NAME) RDS instance" -Region $env:AWS_REGION
+    if ($LASTEXITCODE -ne 0) { Write-Error "Failed to modify DB Subnet Group"; exit 1 }
+    Write-Host "DB Subnet Group updated successfully."
 }
 
 # Check if RDS instance exists
-$existingRdsCommand = "aws rds describe-db-instances --db-instance-identifier ${APP_NAME}-db --query 'DBInstances[0].DBInstanceIdentifier' --output text"
-$existingRds = Invoke-Expression $existingRdsCommand
-
-if (-not $existingRds) {
-    # Create RDS instance if it doesn't exist
-    $rdsCommand = "aws rds create-db-instance --db-instance-identifier ${APP_NAME}-db --db-name $DB_NAME --db-instance-class $DB_INSTANCE_CLASS --engine $DB_ENGINE --engine-version $DB_ENGINE_VERSION --master-username $DB_USERNAME --master-user-password $DB_PASSWORD --allocated-storage $DB_ALLOCATED_STORAGE --vpc-security-group-ids $SECURITY_GROUP_ID --db-subnet-group-name ${APP_NAME}-subnet-group --backup-retention-period 7 --no-publicly-accessible --no-auto-minor-version-upgrade --tags Key=Name,Value=${APP_NAME}-db"
-    Invoke-AWSCommand -Command $rdsCommand
-    Write-Host "RDS instance creation initiated. This may take several minutes."
-    Write-Host "You can check the status in the AWS RDS Console."
-
-    # Wait for the RDS instance to become available
-    Write-Host "Waiting for RDS instance to become available..."
-    $waitCommand = "aws rds wait db-instance-available --db-instance-identifier ${APP_NAME}-db"
-    Invoke-AWSCommand -Command $waitCommand
+$DbInstanceIdentifier = "$($env:APP_NAME)-db"
+$instanceExists = $false
+try {
+    Get-RDSDBInstance -DBInstanceIdentifier $DbInstanceIdentifier -Region $env:AWS_REGION -ErrorAction Stop | Out-Null
+    $instanceExists = $true
+} catch [Amazon.RDS.Model.DBInstanceNotFoundException] {
+    $instanceExists = $false
+} catch {
+    Write-Error "Error checking DB Instance: $_"; exit 1
 }
-else {
-    Write-Host "RDS instance already exists"
+
+if (-not $instanceExists) {
+    # Create RDS Instance (Single-AZ)
+    Write-Host "Creating RDS Instance (Single-AZ for cost saving): $DbInstanceIdentifier... This may take several minutes."
+    $createParams = @{
+        DBName                 = $env:DB_NAME
+        DBInstanceIdentifier   = $DbInstanceIdentifier
+        DBInstanceClass        = $env:DB_INSTANCE_CLASS
+        Engine                 = $env:DB_ENGINE
+        EngineVersion          = $env:DB_ENGINE_VERSION
+        MasterUsername         = $env:DB_USERNAME
+        MasterUserPassword     = $env:DB_PASSWORD
+        AllocatedStorage       = [int]$env:DB_ALLOCATED_STORAGE
+        DBSubnetGroupName      = $DbSubnetGroupName
+        VpcSecurityGroupId     = $SECURITY_GROUP_ID
+        Region                 = $env:AWS_REGION
+        BackupRetentionPeriod  = 7
+        PreferredBackupWindow  = "03:00-05:00"
+        PreferredMaintenanceWindow = "sun:05:00-sun:07:00"
+        PubliclyAccessible     = $false # Explicitly false
+        # MultiAZ = $false # Default is false, explicitly setting not needed unless overriding true
+        Tag                    = @{Key="Name";Value=$DbInstanceIdentifier},@{Key="AppName";Value=$env:APP_NAME}
+    }
+    New-RDSDBInstance @createParams
+    if ($LASTEXITCODE -ne 0) { Write-Error "Failed to initiate RDS Instance creation."; exit 1 }
+
+    # Wait for the RDS instance to be available
+    Write-Host "Waiting for RDS instance '$DbInstanceIdentifier' to be available..."
+    Wait-RDSDBInstanceAvailable -DBInstanceIdentifier $DbInstanceIdentifier -Region $env:AWS_REGION
+    if ($LASTEXITCODE -ne 0) { Write-Error "Waiter failed. RDS instance might not have become available. Check AWS Console."; exit 1 }
+} else {
+    Write-Host "RDS instance '$DbInstanceIdentifier' already exists. Skipping creation and waiting."
+    # Optionally wait even if exists, in case it was stopped/starting
+    Write-Host "Waiting for existing RDS instance '$DbInstanceIdentifier' to be available..."
+    Wait-RDSDBInstanceAvailable -DBInstanceIdentifier $DbInstanceIdentifier -Region $env:AWS_REGION
+    if ($LASTEXITCODE -ne 0) { Write-Warning "Waiter failed for existing instance. It might be stopped or in an error state." }
 }
 
 # Get the RDS endpoint
-$endpointCommand = "aws rds describe-db-instances --db-instance-identifier ${APP_NAME}-db --query 'DBInstances[0].Endpoint.Address' --output text"
-$RDS_ENDPOINT = Invoke-AWSCommand -Command $endpointCommand
+Write-Host "Retrieving RDS endpoint..."
+$instanceDetails = Get-RDSDBInstance -DBInstanceIdentifier $DbInstanceIdentifier -Region $env:AWS_REGION
+$RDS_ENDPOINT = $instanceDetails.Endpoint.Address
 
-if (-not $RDS_ENDPOINT) {
-    Write-Host "Failed to get RDS endpoint. Using dummy endpoint for testing."
-    $RDS_ENDPOINT = "${APP_NAME}-db.dummy-endpoint.${AWS_REGION}.rds.amazonaws.com"
+if ([string]::IsNullOrWhiteSpace($RDS_ENDPOINT)) {
+    Write-Error "Failed to retrieve RDS Endpoint for instance '$DbInstanceIdentifier'. Check AWS Console."
+    exit 1
 }
-else {
-    Write-Host "RDS endpoint: $RDS_ENDPOINT"
-}
+
+Write-Host "RDS instance is available at: $RDS_ENDPOINT"
 
 # Save RDS configuration to a file
-$ConfigFilePath = Join-Path -Path $ScriptDir -ChildPath "rds-config.ps1"
+$ConfigFilePath = Join-Path -Path $PSScriptRoot -ChildPath "rds-config.ps1"
 @"
 # RDS Configuration
 `$RDS_ENDPOINT = "$RDS_ENDPOINT"
-`$SECURITY_GROUP_ID = "$SECURITY_GROUP_ID"
-`$DB_NAME = "$DB_NAME"
-`$DB_USERNAME = "$DB_USERNAME"
-`$DB_PASSWORD = "$DB_PASSWORD"
+`$SECURITY_GROUP_ID = "$SECURITY_GROUP_ID" # <-- Save DB SG ID
+`$DB_NAME = "$($env:DB_NAME)"
+`$DB_USERNAME = "$($env:DB_USERNAME)"
+`$DB_PASSWORD = "$($env:DB_PASSWORD)" # Be cautious storing plain passwords
 
 # Export variables
 `$env:RDS_ENDPOINT = `$RDS_ENDPOINT
-`$env:SECURITY_GROUP_ID = `$SECURITY_GROUP_ID
+`$env:SECURITY_GROUP_ID = `$SECURITY_GROUP_ID # <-- Export DB SG ID
 `$env:DB_NAME = `$DB_NAME
 `$env:DB_USERNAME = `$DB_USERNAME
 `$env:DB_PASSWORD = `$DB_PASSWORD
 "@ | Out-File -FilePath $ConfigFilePath -Encoding utf8
 
 Write-Host "RDS configuration saved to $ConfigFilePath"
-Write-Host "RDS creation completed!" 
+Write-Host "RDS setup script completed successfully." 

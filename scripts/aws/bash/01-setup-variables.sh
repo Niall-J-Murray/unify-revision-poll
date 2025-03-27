@@ -8,11 +8,11 @@ export SUBDOMAIN="feature-poll"
 
 # Database Configuration
 export DB_NAME="feature_poll"
-export DB_USERNAME="admin"
-export DB_PASSWORD="$(openssl rand -base64 32)"  # Generate a random password
+export DB_USERNAME="dbadmin"
+export DB_PASSWORD="$(openssl rand -hex 32)"  # Changed from base64 to hex
 export DB_INSTANCE_CLASS="db.t3.micro"
 export DB_ENGINE="postgres"
-export DB_ENGINE_VERSION="13"
+export DB_ENGINE_VERSION="16"
 export DB_ALLOCATED_STORAGE="20"
 
 # VPC Configuration
@@ -30,6 +30,10 @@ export ECS_CLUSTER_NAME="${APP_NAME}-cluster"
 export ECS_SERVICE_NAME="${APP_NAME}-service"
 export ECS_TASK_FAMILY="${APP_NAME}-task"
 export ECS_CONTAINER_NAME="${APP_NAME}-container"
+export ECS_TASK_CPU=256
+export ECS_TASK_MEMORY=512
+export ECS_CONTAINER_PORT=3000
+export ECS_SERVICE_COUNT=1
 
 # Load Balancer Configuration
 export ALB_NAME="${APP_NAME}-alb"

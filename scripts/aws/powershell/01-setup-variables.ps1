@@ -5,16 +5,17 @@ $DOMAIN_NAME = "murrdev.com"
 $SUBDOMAIN = "feature-poll"
 
 # Database Configuration
-$DB_NAME = "feature_poll"
-$DB_USERNAME = "dbadmin"
+$env:DB_NAME = "feature_poll"
+$env:DB_USERNAME = "dbadmin"
+# Generate a random password using hex (safer for RDS)
+$bytes = New-Object Byte[] 32
 $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
-$bytes = New-Object byte[] 32
 $rng.GetBytes($bytes)
-$DB_PASSWORD = [Convert]::ToBase64String($bytes)
-$DB_INSTANCE_CLASS = "db.t3.micro"
-$DB_ENGINE = "postgres"
-$DB_ENGINE_VERSION = "13"
-$DB_ALLOCATED_STORAGE = "20"
+$env:DB_PASSWORD = ($bytes | ForEach-Object { $_.ToString("x2") }) -join ''
+$env:DB_INSTANCE_CLASS = "db.t3.micro"
+$env:DB_ENGINE = "postgres"
+$env:DB_ENGINE_VERSION = "16"
+$env:DB_ALLOCATED_STORAGE = 20
 
 # VPC Configuration
 $VPC_CIDR = "10.0.0.0/16"

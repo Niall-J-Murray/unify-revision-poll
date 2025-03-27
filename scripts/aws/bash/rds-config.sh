@@ -1,26 +1,8 @@
 #!/bin/bash
 
 # RDS Configuration
-export RDS_INSTANCE_IDENTIFIER="${APP_NAME}-db"
-export RDS_ENGINE="postgres"
-export RDS_ENGINE_VERSION="15.4"
-export RDS_INSTANCE_CLASS="db.t3.micro"
-export RDS_ALLOCATED_STORAGE="20"
-export RDS_STORAGE_TYPE="gp2"
-export RDS_DB_NAME="${APP_NAME}_db"
-export RDS_MASTER_USERNAME="${APP_NAME}_admin"
-export RDS_MASTER_PASSWORD=""
-export RDS_PORT="5432"
-export RDS_BACKUP_RETENTION_PERIOD="7"
-export RDS_BACKUP_WINDOW="03:00-04:00"
-export RDS_MAINTENANCE_WINDOW="Mon:04:00-Mon:05:00"
-export RDS_AUTO_MINOR_VERSION_UPGRADE="true"
-export RDS_COPY_TAGS_TO_SNAPSHOT="true"
-export RDS_DELETION_PROTECTION="false"
-export RDS_ENABLE_LOGGING_EXPORTS="postgresql"
-export RDS_ENABLE_PERFORMANCE_INSIGHTS="true"
-export RDS_PERFORMANCE_INSIGHTS_RETENTION_PERIOD="7"
-export RDS_PUBLICLY_ACCESSIBLE="false"
-export RDS_SKIP_FINAL_SNAPSHOT="true"
-export RDS_STORAGE_ENCRYPTED="true"
-export RDS_TAGS="Key=Name,Value=${APP_NAME}-db Key=Environment,Value=production" 
+export RDS_ENDPOINT=feature-poll-db.c72euymwgjn7.eu-west-1.rds.amazonaws.com
+export SECURITY_GROUP_ID=sg-068e684666bbc3521 # <-- Ensure this is saved
+export DB_NAME=feature_poll
+export DB_USERNAME=dbadmin # <-- Use the variable, not hardcoded 'admin'
+export DB_PASSWORD='9b8e1a9d317b35f9ae3568c6f94c2002eeb96256d1f60e31657960189389a79b' # <-- Use single quotes to preserve special chars if any

@@ -23,129 +23,123 @@ function Invoke-AWSCommand {
     }
 }
 
-Write-Host "Creating VPC and related resources..."
+Write-Host "Starting VPC creation script..."
 
-# Create VPC
-$vpcCommand = "aws ec2 create-vpc --cidr-block $VPC_CIDR --tag-specifications 'ResourceType=vpc,Tags=[{Key=Name,Value=${APP_NAME}-vpc}]' --query 'Vpc.VpcId' --output text"
-$VPC_ID = Invoke-AWSCommand -Command $vpcCommand
+# Use environment variables
+$Region = $env:AWS_REGION
+$AppName = $env:APP_NAME
+$VpcCidr = $env:VPC_CIDR
+# ... (other variables) ...
 
-if (-not $VPC_ID) {
-    Write-Host "Failed to create VPC. Using dummy VPC ID for testing."
-    $VPC_ID = "vpc-dummy123"
-}
-else {
-    Write-Host "Created VPC: $VPC_ID"
-}
-
-# Enable DNS hostnames and DNS support
-$dnsHostnamesCommand = "aws ec2 modify-vpc-attribute --vpc-id $VPC_ID --enable-dns-hostnames"
-$dnsSupportCommand = "aws ec2 modify-vpc-attribute --vpc-id $VPC_ID --enable-dns-support"
-
-Invoke-AWSCommand -Command $dnsHostnamesCommand
-Invoke-AWSCommand -Command $dnsSupportCommand
-
-# Create Internet Gateway
-$igwCommand = "aws ec2 create-internet-gateway --tag-specifications 'ResourceType=internet-gateway,Tags=[{Key=Name,Value=${APP_NAME}-igw}]' --query 'InternetGateway.InternetGatewayId' --output text"
-$IGW_ID = Invoke-AWSCommand -Command $igwCommand
-
-if (-not $IGW_ID) {
-    Write-Host "Failed to create Internet Gateway. Using dummy IGW ID for testing."
-    $IGW_ID = "igw-dummy123"
-}
-else {
-    Write-Host "Created Internet Gateway: $IGW_ID"
+# --- Check/Create VPC ---
+Write-Host "Checking for existing VPC..."
+$vpcId = (aws ec2 describe-vpcs --filters "Name=tag:Name,Values=$($AppName)-vpc" "Name=cidr,Values=$VpcCidr" --query 'Vpcs[0].VpcId' --output text --region $Region 2>$null)
+if ([string]::IsNullOrWhiteSpace($vpcId) -or $vpcId -eq "None") {
+    Write-Host "Creating VPC with CIDR $VpcCidr..."
+    $vpc = New-EC2Vpc -CidrBlock $VpcCidr -Region $Region -TagSpecification @{ResourceType="vpc"; Tags=@{Name="$AppName-vpc"}}
+    if ($LASTEXITCODE -ne 0) { Write-Error "Failed to create VPC"; exit 1 }
+    $vpcId = $vpc.VpcId
+    Write-Host "VPC created with ID: $vpcId"
+    Set-EC2VpcAttribute -VpcId $vpcId -EnableDnsHostnames $true -Region $Region
+} else {
+    Write-Host "Found existing VPC: $vpcId"
 }
 
-# Attach Internet Gateway to VPC
-$attachCommand = "aws ec2 attach-internet-gateway --vpc-id $VPC_ID --internet-gateway-id $IGW_ID"
-Invoke-AWSCommand -Command $attachCommand
-
-# Create route table for public subnets
-$rtCommand = "aws ec2 create-route-table --vpc-id $VPC_ID --tag-specifications 'ResourceType=route-table,Tags=[{Key=Name,Value=${APP_NAME}-public-rt}]' --query 'RouteTable.RouteTableId' --output text"
-$PUBLIC_RT_ID = Invoke-AWSCommand -Command $rtCommand
-
-if (-not $PUBLIC_RT_ID) {
-    Write-Host "Failed to create route table. Using dummy RT ID for testing."
-    $PUBLIC_RT_ID = "rtb-dummy123"
-}
-else {
-    Write-Host "Created public route table: $PUBLIC_RT_ID"
+# --- Check/Create Internet Gateway ---
+Write-Host "Checking for existing Internet Gateway..."
+$igwId = (aws ec2 describe-internet-gateways --filters "Name=tag:Name,Values=$($AppName)-igw" "Name=attachment.vpc-id,Values=$vpcId" --query 'InternetGateways[0].InternetGatewayId' --output text --region $Region 2>$null)
+if ([string]::IsNullOrWhiteSpace($igwId) -or $igwId -eq "None") {
+    Write-Host "Creating Internet Gateway..."
+    $igw = New-EC2InternetGateway -Region $Region -TagSpecification @{ResourceType="internet-gateway"; Tags=@{Name="$AppName-igw"}}
+    if ($LASTEXITCODE -ne 0) { Write-Error "Failed to create Internet Gateway"; exit 1 }
+    $igwId = $igw.InternetGatewayId
+    Add-EC2InternetGateway -InternetGatewayId $igwId -VpcId $vpcId -Region $Region
+    Write-Host "Internet Gateway created with ID: $igwId and attached to VPC $vpcId"
+} else {
+    Write-Host "Found existing Internet Gateway: $igwId"
 }
 
-# Add route to Internet Gateway
-$routeCommand = "aws ec2 create-route --route-table-id $PUBLIC_RT_ID --destination-cidr-block 0.0.0.0/0 --gateway-id $IGW_ID"
-Invoke-AWSCommand -Command $routeCommand
-
-# Create public subnets
-$publicSubnet1Command = "aws ec2 create-subnet --vpc-id $VPC_ID --cidr-block $PUBLIC_SUBNET_1_CIDR --availability-zone ${AWS_REGION}a --tag-specifications 'ResourceType=subnet,Tags=[{Key=Name,Value=${APP_NAME}-public-subnet-1}]' --query 'Subnet.SubnetId' --output text"
-$PUBLIC_SUBNET_1_ID = Invoke-AWSCommand -Command $publicSubnet1Command
-
-if (-not $PUBLIC_SUBNET_1_ID) {
-    Write-Host "Failed to create public subnet 1. Using dummy subnet ID for testing."
-    $PUBLIC_SUBNET_1_ID = "subnet-dummy123"
-}
-else {
-    Write-Host "Created public subnet 1: $PUBLIC_SUBNET_1_ID"
-}
-
-$publicSubnet2Command = "aws ec2 create-subnet --vpc-id $VPC_ID --cidr-block $PUBLIC_SUBNET_2_CIDR --availability-zone ${AWS_REGION}b --tag-specifications 'ResourceType=subnet,Tags=[{Key=Name,Value=${APP_NAME}-public-subnet-2}]' --query 'Subnet.SubnetId' --output text"
-$PUBLIC_SUBNET_2_ID = Invoke-AWSCommand -Command $publicSubnet2Command
-
-if (-not $PUBLIC_SUBNET_2_ID) {
-    Write-Host "Failed to create public subnet 2. Using dummy subnet ID for testing."
-    $PUBLIC_SUBNET_2_ID = "subnet-dummy456"
-}
-else {
-    Write-Host "Created public subnet 2: $PUBLIC_SUBNET_2_ID"
+# --- Check/Create Public Route Table ---
+Write-Host "Checking for Public Route Table..."
+$publicRouteTableId = (aws ec2 describe-route-tables --filters "Name=tag:Name,Values=$($AppName)-public-rt" "Name=vpc-id,Values=$vpcId" --query 'RouteTables[0].RouteTableId' --output text --region $Region 2>$null)
+if ([string]::IsNullOrWhiteSpace($publicRouteTableId) -or $publicRouteTableId -eq "None") {
+    Write-Host "Creating Public Route Table..."
+    $publicRouteTable = New-EC2RouteTable -VpcId $vpcId -Region $Region -TagSpecification @{ResourceType="route-table"; Tags=@{Name="$AppName-public-rt"}}
+    if ($LASTEXITCODE -ne 0) { Write-Error "Failed to create Public Route Table"; exit 1 }
+    $publicRouteTableId = $publicRouteTable.RouteTableId
+    # Add default route to IGW (check if exists first?)
+    try {
+        New-EC2Route -RouteTableId $publicRouteTableId -DestinationCidrBlock "0.0.0.0/0" -GatewayId $igwId -Region $Region -ErrorAction Stop
+        Write-Host "Added default route to Public Route Table $publicRouteTableId"
+    } catch [Amazon.EC2.AmazonEC2Exception] {
+        if ($_.Exception.ErrorCode -eq 'RouteAlreadyExists') {
+            Write-Host "Default route already exists in Public Route Table $publicRouteTableId"
+        } else {
+            Write-Error "Failed to add default route: $_"; exit 1
+        }
+    }
+    Write-Host "Public Route Table created/verified: $publicRouteTableId"
+} else {
+    Write-Host "Found existing Public Route Table: $publicRouteTableId"
 }
 
-# Associate public subnets with public route table
-$associate1Command = "aws ec2 associate-route-table --route-table-id $PUBLIC_RT_ID --subnet-id $PUBLIC_SUBNET_1_ID"
-$associate2Command = "aws ec2 associate-route-table --route-table-id $PUBLIC_RT_ID --subnet-id $PUBLIC_SUBNET_2_ID"
 
-Invoke-AWSCommand -Command $associate1Command
-Invoke-AWSCommand -Command $associate2Command
+# --- Function to Check/Create Subnet ---
+function Get-OrCreateSubnet {
+    param(
+        [string]$SubnetName,
+        [string]$CidrBlock,
+        [string]$AvailabilityZone,
+        [string]$VpcId,
+        [string]$Region,
+        [string]$RouteTableId # Optional
+    )
+    Write-Host "Checking for subnet: $SubnetName in AZ $AvailabilityZone..."
+    $subnetId = (aws ec2 describe-subnets `
+        --filters "Name=tag:Name,Values=$SubnetName" "Name=vpc-id,Values=$VpcId" "Name=cidr-block,Values=$CidrBlock" "Name=availability-zone,Values=$AvailabilityZone" `
+        --query 'Subnets[0].SubnetId' --output text --region $Region 2>$null)
 
-# Create private subnets
-$privateSubnet1Command = "aws ec2 create-subnet --vpc-id $VPC_ID --cidr-block $PRIVATE_SUBNET_1_CIDR --availability-zone ${AWS_REGION}a --tag-specifications 'ResourceType=subnet,Tags=[{Key=Name,Value=${APP_NAME}-private-subnet-1}]' --query 'Subnet.SubnetId' --output text"
-$PRIVATE_SUBNET_1_ID = Invoke-AWSCommand -Command $privateSubnet1Command
+    if ([string]::IsNullOrWhiteSpace($subnetId) -or $subnetId -eq "None") {
+        Write-Host "Subnet $SubnetName not found. Creating..."
+        $subnet = New-EC2Subnet -VpcId $VpcId -CidrBlock $CidrBlock -AvailabilityZone $AvailabilityZone -Region $Region -TagSpecification @{ResourceType="subnet"; Tags=@{Name=$SubnetName}}
+        if ($LASTEXITCODE -ne 0) { Write-Error "Failed to create subnet $SubnetName"; exit 1 }
+        $subnetId = $subnet.SubnetId
+        Write-Host "Created subnet $SubnetName with ID: $subnetId"
 
-if (-not $PRIVATE_SUBNET_1_ID) {
-    Write-Host "Failed to create private subnet 1. Using dummy subnet ID for testing."
-    $PRIVATE_SUBNET_1_ID = "subnet-dummy789"
+        # Associate route table if provided
+        if (-not [string]::IsNullOrWhiteSpace($RouteTableId)) {
+            Write-Host "Associating Route Table $RouteTableId with $SubnetName..."
+            Register-EC2RouteTable -SubnetId $subnetId -RouteTableId $RouteTableId -Region $Region
+            if ($LASTEXITCODE -ne 0) { Write-Error "Failed to associate route table with $SubnetName"; exit 1 }
+        }
+    } else {
+        Write-Host "Found existing subnet $SubnetName: $subnetId"
+    }
+    return $subnetId
 }
-else {
-    Write-Host "Created private subnet 1: $PRIVATE_SUBNET_1_ID"
-}
 
-$privateSubnet2Command = "aws ec2 create-subnet --vpc-id $VPC_ID --cidr-block $PRIVATE_SUBNET_2_CIDR --availability-zone ${AWS_REGION}b --tag-specifications 'ResourceType=subnet,Tags=[{Key=Name,Value=${APP_NAME}-private-subnet-2}]' --query 'Subnet.SubnetId' --output text"
-$PRIVATE_SUBNET_2_ID = Invoke-AWSCommand -Command $privateSubnet2Command
+# --- Create Subnets ---
+$envFile = "$PSScriptRoot\vpc-config.ps1"
+"# VPC Configuration`n`$env:VPC_ID = `"$vpcId`"" | Out-File -FilePath $envFile -Encoding utf8
 
-if (-not $PRIVATE_SUBNET_2_ID) {
-    Write-Host "Failed to create private subnet 2. Using dummy subnet ID for testing."
-    $PRIVATE_SUBNET_2_ID = "subnet-dummy012"
-}
-else {
-    Write-Host "Created private subnet 2: $PRIVATE_SUBNET_2_ID"
-}
+# Public Subnets
+$publicSubnet1Id = Get-OrCreateSubnet -SubnetName "$AppName-public-subnet-1" -CidrBlock $env:PUBLIC_SUBNET_1_CIDR -AvailabilityZone ($Region + "a") -VpcId $vpcId -Region $Region -RouteTableId $publicRouteTableId
+$publicSubnet2Id = Get-OrCreateSubnet -SubnetName "$AppName-public-subnet-2" -CidrBlock $env:PUBLIC_SUBNET_2_CIDR -AvailabilityZone ($Region + "b") -VpcId $vpcId -Region $Region -RouteTableId $publicRouteTableId
+Add-Content -Path $envFile -Value "`$env:PUBLIC_SUBNET_1_ID = `"$publicSubnet1Id`""
+Add-Content -Path $envFile -Value "`$env:PUBLIC_SUBNET_2_ID = `"$publicSubnet2Id`""
 
-# Save VPC configuration to a file
-$ConfigFilePath = Join-Path -Path $ScriptDir -ChildPath "vpc-config.ps1"
-@"
-# VPC Configuration
-`$VPC_ID = "$VPC_ID"
-`$PUBLIC_SUBNET_1_ID = "$PUBLIC_SUBNET_1_ID"
-`$PUBLIC_SUBNET_2_ID = "$PUBLIC_SUBNET_2_ID"
-`$PRIVATE_SUBNET_1_ID = "$PRIVATE_SUBNET_1_ID"
-`$PRIVATE_SUBNET_2_ID = "$PRIVATE_SUBNET_2_ID"
+# Private Subnets (Use AZs with capacity: eu-west-1a, eu-west-1b)
+$privateSubnet1Id = Get-OrCreateSubnet -SubnetName "$AppName-private-subnet-1" -CidrBlock $env:PRIVATE_SUBNET_1_CIDR -AvailabilityZone ($Region + "a") -VpcId $vpcId -Region $Region # <-- Use eu-west-1a
+$privateSubnet2Id = Get-OrCreateSubnet -SubnetName "$AppName-private-subnet-2" -CidrBlock $env:PRIVATE_SUBNET_2_CIDR -AvailabilityZone ($Region + "b") -VpcId $vpcId -Region $Region # <-- Use eu-west-1b
+Add-Content -Path $envFile -Value "`$env:PRIVATE_SUBNET_1_ID = `"$privateSubnet1Id`""
+Add-Content -Path $envFile -Value "`$env:PRIVATE_SUBNET_2_ID = `"$privateSubnet2Id`""
 
-# Export variables
-`$env:VPC_ID = `$VPC_ID
-`$env:PUBLIC_SUBNET_1_ID = `$PUBLIC_SUBNET_1_ID
-`$env:PUBLIC_SUBNET_2_ID = `$PUBLIC_SUBNET_2_ID
-`$env:PRIVATE_SUBNET_1_ID = `$PRIVATE_SUBNET_1_ID
-`$env:PRIVATE_SUBNET_2_ID = `$PRIVATE_SUBNET_2_ID
-"@ | Out-File -FilePath $ConfigFilePath -Encoding utf8
+# Export variables to current session
+$env:VPC_ID = $vpcId
+$env:PUBLIC_SUBNET_1_ID = $publicSubnet1Id
+$env:PUBLIC_SUBNET_2_ID = $publicSubnet2Id
+$env:PRIVATE_SUBNET_1_ID = $privateSubnet1Id
+$env:PRIVATE_SUBNET_2_ID = $privateSubnet2Id
 
-Write-Host "VPC configuration saved to $ConfigFilePath"
-Write-Host "VPC creation completed!" 
+Write-Host "VPC configuration saved to $envFile"
+Write-Host "VPC setup script completed successfully." 
