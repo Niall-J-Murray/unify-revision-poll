@@ -18,7 +18,7 @@ $ECR_REPO_NAME = $APP_NAME
 # This function tries multiple approaches to work around Windows-specific SSL issues
 function Invoke-AWSCommand {
     param (
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory = $true)]
         [string]$Command
     )
     
@@ -76,14 +76,16 @@ catch {
 # Create ECR repository if it doesn't exist
 if ($repoExists -and (-not $repoExists.Contains("RepositoryNotFoundException"))) {
     Write-Host "ECR repository $ECR_REPO_NAME already exists"
-} else {
+}
+else {
     Write-Host "Creating ECR repository..."
     $createCommand = "aws ecr create-repository --repository-name $ECR_REPO_NAME --region $AWS_REGION"
     $result = Invoke-AWSCommand -Command $createCommand
     
     if ($result) {
         Write-Host "ECR repository created successfully"
-    } else {
+    }
+    else {
         Write-Host "Failed to create ECR repository. Using dummy values for testing."
     }
 }
@@ -98,7 +100,8 @@ if (-not $ECR_REPO_URI) {
     $ACCOUNT_ID = "123456789012" # Dummy account ID
     $ECR_REPO_URI = "${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}"
     Write-Host "Using dummy ECR repository URI for testing: $ECR_REPO_URI"
-} else {
+}
+else {
     Write-Host "ECR repository URI: $ECR_REPO_URI"
 }
 
@@ -119,17 +122,25 @@ $pwdCommand = "aws ecr get-login-password --region $AWS_REGION"
 $password = Invoke-AWSCommand -Command $pwdCommand
 
 if ($password) {
-    # Try to login to Docker
-    $dockerLoginCommand = "docker login --username AWS --password $password $ECR_REPO_URI"
+    # Try to login to Docker using the more secure password-stdin approach
+    Write-Host "Logging in to Docker with AWS credentials..."
     try {
-        Invoke-Expression $dockerLoginCommand | Out-Null
+        # Use a temporary file to avoid PowerShell pipe handling issues
+        $tempFile = [System.IO.Path]::GetTempFileName()
+        Set-Content -Path $tempFile -Value $password -NoNewline
+        $loginResult = cmd /c "type $tempFile | docker login --username AWS --password-stdin $ECR_REPO_URI"
+        Remove-Item -Path $tempFile -Force
+        
         Write-Host "Successfully logged in to ECR with Docker"
-    } catch {
+    }
+    catch {
         Write-Host "Failed to login to Docker. Please check if Docker is installed and running."
+        Write-Host "Error: $_"
         Write-Host "If you need to login to ECR manually, use these commands:"
         Write-Host "aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REPO_URI"
     }
-} else {
+}
+else {
     Write-Host "Could not get ECR login password. Please login manually with:"
     Write-Host "aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REPO_URI"
 }

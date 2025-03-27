@@ -20,7 +20,7 @@ export SUBDOMAIN="revision-poll"
 # Database settings
 export DB_NAME="revisionpoll"
 export DB_USERNAME="revisionpoll_admin"
-export DB_PASSWORD="RWy638K81PBNNvYZMokJKg=="
+export DB_PASSWORD="MBAmztMRqs1w/hAICgDHvw=="
 export DB_PORT="5432"
 export DB_INSTANCE_CLASS="db.t3.micro"
 export DB_ALLOCATED_STORAGE="20"

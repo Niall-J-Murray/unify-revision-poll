@@ -1,0 +1,16 @@
+{
+  "Changes": [
+    {
+      "Action": "CREATE",
+      "ResourceRecordSet": {
+        "Name": "feature-poll.murrdev.com",
+        "Type": "A",
+        "AliasTarget": {
+          "HostedZoneId": "Z32O12XQLNTSW2",
+          "DNSName": "feature-poll-alb-179597160.eu-west-1.elb.amazonaws.com",
+          "EvaluateTargetHealth": true
+        }
+      }
+    }
+  ]
+}

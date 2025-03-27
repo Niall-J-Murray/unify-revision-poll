@@ -26,7 +26,7 @@ else {
 # This function tries multiple approaches to work around Windows-specific SSL issues
 function Invoke-AWSCommand {
     param (
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory = $true)]
         [string]$Command
     )
     
@@ -86,15 +86,23 @@ $pwdCommand = "aws ecr get-login-password --region $AWS_REGION"
 $password = Invoke-AWSCommand -Command $pwdCommand
 
 if ($password) {
-    $dockerLoginCommand = "docker login --username AWS --password $password $ECR_REPO_URI"
+    Write-Host "Logging in to Docker with AWS credentials..."
     try {
-        Invoke-Expression $dockerLoginCommand | Out-Null
+        # Use a temporary file to avoid PowerShell pipe handling issues
+        $tempFile = [System.IO.Path]::GetTempFileName()
+        Set-Content -Path $tempFile -Value $password -NoNewline
+        $loginResult = cmd /c "type $tempFile | docker login --username AWS --password-stdin $ECR_REPO_URI"
+        Remove-Item -Path $tempFile -Force
+        
         Write-Host "Successfully logged in to ECR with Docker"
-    } catch {
+    }
+    catch {
         Write-Host "Failed to login to Docker. Please check if Docker is installed and running."
+        Write-Host "Error: $_"
         exit 1
     }
-} else {
+}
+else {
     Write-Host "Could not get ECR login password. Exiting."
     exit 1
 }
@@ -110,7 +118,8 @@ try {
         exit 1
     }
     Write-Host "Docker image built successfully"
-} catch {
+}
+catch {
     Write-Host "Error during Docker build: $_"
     exit 1
 }
@@ -124,7 +133,8 @@ try {
         exit 1
     }
     Write-Host "Docker image tagged successfully"
-} catch {
+}
+catch {
     Write-Host "Error during Docker tag: $_"
     exit 1
 }
@@ -138,7 +148,8 @@ try {
         exit 1
     }
     Write-Host "Docker image pushed successfully to $ECR_REPO_URI"
-} catch {
+}
+catch {
     Write-Host "Error during Docker push: $_"
     exit 1
 }

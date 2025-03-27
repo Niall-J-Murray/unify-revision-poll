@@ -1,0 +1,19 @@
+#!/bin/bash
+
+# VPC Configuration
+export VPC_ID=""
+export PUBLIC_SUBNET_1_ID=""
+export PUBLIC_SUBNET_2_ID=""
+export PRIVATE_SUBNET_1_ID=""
+export PRIVATE_SUBNET_2_ID=""
+export INTERNET_GATEWAY_ID=""
+export NAT_GATEWAY_1_ID=""
+export NAT_GATEWAY_2_ID=""
+export PUBLIC_ROUTE_TABLE_ID=""
+export PRIVATE_ROUTE_TABLE_1_ID=""
+export PRIVATE_ROUTE_TABLE_2_ID=""
+export PUBLIC_SUBNET_1_CIDR="10.0.1.0/24"
+export PUBLIC_SUBNET_2_CIDR="10.0.2.0/24"
+export PRIVATE_SUBNET_1_CIDR="10.0.3.0/24"
+export PRIVATE_SUBNET_2_CIDR="10.0.4.0/24"
+export VPC_CIDR="10.0.0.0/16" 

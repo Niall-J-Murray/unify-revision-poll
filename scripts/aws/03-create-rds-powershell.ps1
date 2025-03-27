@@ -33,7 +33,7 @@ $DB_INSTANCE_CLASS = "db.t3.micro"
 # This function tries multiple approaches to work around Windows-specific SSL issues
 function Invoke-AWSCommand {
     param (
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory = $true)]
         [string]$Command
     )
     
@@ -80,29 +80,55 @@ function Invoke-AWSCommand {
     }
 }
 
-# Create security group for RDS
-Write-Host "Creating security group for RDS..."
-$sgCommand = "aws ec2 create-security-group --group-name ${APP_NAME}-rds-sg --description 'Security group for RDS' --vpc-id $VPC_ID --region $AWS_REGION --query 'GroupId' --output text"
-$RDS_SG_ID = Invoke-AWSCommand -Command $sgCommand
+# Check for existing security group first
+Write-Host "Checking for existing security group..."
+$checkSgCommand = "aws ec2 describe-security-groups --filters 'Name=group-name,Values=${APP_NAME}-rds-sg' --query 'SecurityGroups[0].GroupId' --output text --region $AWS_REGION"
+$RDS_SG_ID = Invoke-AWSCommand -Command $checkSgCommand
 
-if (-not $RDS_SG_ID) {
-    # If failed, use a dummy ID for testing
-    $RDS_SG_ID = "sg-dummy"
-    Write-Host "Using dummy Security Group ID for testing: $RDS_SG_ID"
+if ($RDS_SG_ID -and $RDS_SG_ID -ne "None") {
+    Write-Host "Using existing security group: $RDS_SG_ID"
 }
 else {
-    Write-Host "Created security group: $RDS_SG_ID"
+    # Create security group for RDS
+    Write-Host "Creating security group for RDS..."
+    $sgCommand = "aws ec2 create-security-group --group-name ${APP_NAME}-rds-sg --description 'Security group for RDS' --vpc-id $VPC_ID --region $AWS_REGION --query 'GroupId' --output text"
+    $RDS_SG_ID = Invoke-AWSCommand -Command $sgCommand
+
+    if (-not $RDS_SG_ID) {
+        # If failed, use a dummy ID for testing
+        $RDS_SG_ID = "sg-dummy"
+        Write-Host "Using dummy Security Group ID for testing: $RDS_SG_ID"
+    }
+    else {
+        Write-Host "Created security group: $RDS_SG_ID"
+        
+        # Allow PostgreSQL traffic (port 5432) from anywhere in the VPC
+        Write-Host "Configuring security group rules..."
+        $ingressCommand = "aws ec2 authorize-security-group-ingress --group-id $RDS_SG_ID --protocol tcp --port 5432 --cidr 10.0.0.0/16 --region $AWS_REGION"
+        Invoke-AWSCommand -Command $ingressCommand
+    }
 }
 
-# Allow PostgreSQL traffic (port 5432) from anywhere in the VPC
-Write-Host "Configuring security group rules..."
-$ingressCommand = "aws ec2 authorize-security-group-ingress --group-id $RDS_SG_ID --protocol tcp --port 5432 --cidr 10.0.0.0/16 --region $AWS_REGION"
-Invoke-AWSCommand -Command $ingressCommand
+# Check for existing DB subnet group
+Write-Host "Checking for existing DB subnet group..."
+$checkSubnetGroupCommand = "aws rds describe-db-subnet-groups --db-subnet-group-name ${APP_NAME}-subnet-group --region $AWS_REGION 2>&1"
+$subnetGroupExists = $true
+try {
+    Invoke-Expression $checkSubnetGroupCommand | Out-Null
+}
+catch {
+    $subnetGroupExists = $false
+}
 
-# Create DB subnet group
-Write-Host "Creating DB subnet group..."
-$subnetGroupCommand = "aws rds create-db-subnet-group --db-subnet-group-name ${APP_NAME}-subnet-group --db-subnet-group-description 'Subnet group for RDS' --subnet-ids '$PRIVATE_SUBNET_1_ID' '$PRIVATE_SUBNET_2_ID' --region $AWS_REGION"
-Invoke-AWSCommand -Command $subnetGroupCommand
+if ($subnetGroupExists) {
+    Write-Host "Using existing DB subnet group: ${APP_NAME}-subnet-group"
+}
+else {
+    # Create DB subnet group
+    Write-Host "Creating DB subnet group..."
+    $subnetGroupCommand = "aws rds create-db-subnet-group --db-subnet-group-name ${APP_NAME}-subnet-group --db-subnet-group-description 'Subnet group for RDS' --subnet-ids '$PRIVATE_SUBNET_1_ID' '$PRIVATE_SUBNET_2_ID' --region $AWS_REGION"
+    Invoke-AWSCommand -Command $subnetGroupCommand
+}
 
 # Create RDS instance
 Write-Host "Creating RDS PostgreSQL instance (this may take several minutes)..."

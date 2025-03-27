@@ -1,0 +1,64 @@
+{
+  "family": "feature-poll",
+  "networkMode": "awsvpc",
+  "executionRoleArn": "arn:aws:iam::765194364851:role/feature-poll-ecs-execution-role",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "containerDefinitions": [
+    {
+      "name": "feature-poll",
+      "image": "765194364851.dkr.ecr.eu-west-1.amazonaws.com/feature-poll-repo:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 3000,
+          "hostPort": 3000,
+          "protocol": "tcp"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/feature-poll",
+          "awslogs-region": "eu-west-1",
+          "awslogs-stream-prefix": "ecs",
+          "awslogs-create-group": "true"
+        }
+      },
+      "environment": [
+        {
+          "name": "DATABASE_URL",
+          "value": "postgresql://dbadmin:3Q0sZ0tuLTJotUlIV7q5KO9Ajt2bfoMIf3zW5SnDkC0=@feature-poll-db.c72euymwgjn7.eu-west-1.rds.amazonaws.com:5432/feature_poll"
+        },
+        {
+          "name": "DIRECT_URL",
+          "value": "postgresql://dbadmin:3Q0sZ0tuLTJotUlIV7q5KO9Ajt2bfoMIf3zW5SnDkC0=@feature-poll-db.c72euymwgjn7.eu-west-1.rds.amazonaws.com:5432/feature_poll"
+        },
+        {
+          "name": "NEXT_PUBLIC_APP_URL",
+          "value": "https://feature-poll.murrdev.com"
+        },
+        {
+          "name": "NEXTAUTH_URL",
+          "value": "https://feature-poll.murrdev.com"
+        },
+        {
+          "name": "NEXTAUTH_SECRET",
+          "value": "this-is-a-secret-value-for-nextauth"
+        },
+        {
+          "name": "NODE_ENV",
+          "value": "production"
+        }
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -f http://localhost:3000/ || exit 1"],
+        "interval": 30,
+        "timeout": 10,
+        "retries": 3,
+        "startPeriod": 120
+      }
+    }
+  ]
+}

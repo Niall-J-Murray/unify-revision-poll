@@ -1,0 +1,17 @@
+﻿{
+    "Changes":  [
+                    {
+                        "ResourceRecordSet":  {
+                                                  "TTL":  300,
+                                                  "Name":  "_5c2cbd62ec09505c15de0bfb6e0702fd.feature-poll.murrdev.com.",
+                                                  "Type":  "CNAME",
+                                                  "ResourceRecords":  [
+                                                                          {
+                                                                              "Value":  "_332d59ec995550ea5887fb38e1c88741.xlfgrmvvlj.acm-validations.aws."
+                                                                          }
+                                                                      ]
+                                              },
+                        "Action":  "CREATE"
+                    }
+                ]
+}
