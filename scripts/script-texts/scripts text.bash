@@ -11,9 +11,12 @@ sh 06-create-secrets.sh
 sh 07-push-docker.sh
 sh 08-create-ssl-certificate.sh
 sh 09-create-ecs-resources.sh
-sh 010-create-route53-record.sh
+sh 10-create-route53-record.sh
 --- Check first---
-sh 011-finalize-deployment.sh
+sh 11-finalize-deployment.sh
 
 
-I should have also added that I would like to be able to access the RDS DB from my local machine.
+Before we continue, I can't remember if I added that I would
+ like to be able to access the RDS DB
+  from my local machine.
+  Is that something we can do already?

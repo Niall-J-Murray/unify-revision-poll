@@ -68,47 +68,83 @@ else
   echo "DB Subnet Group updated successfully."
 fi
 
-# Create RDS instance
-DB_INSTANCE_IDENTIFIER="${APP_NAME}-db" # Use consistent identifier
-echo "Creating RDS Instance (Single-AZ for cost saving) using username '$DB_USERNAME'..."
-aws rds create-db-instance \
-  --db-instance-identifier "$DB_INSTANCE_IDENTIFIER" \
-  --db-name $DB_NAME \
-  --db-instance-class $DB_INSTANCE_CLASS \
-  --engine $DB_ENGINE \
-  --engine-version $DB_ENGINE_VERSION \
-  --master-username "$DB_USERNAME" \
-  --master-user-password "$DB_PASSWORD" \
-  --allocated-storage $DB_ALLOCATED_STORAGE \
-  --db-subnet-group-name $DB_SUBNET_GROUP_NAME \
-  --vpc-security-group-ids $SECURITY_GROUP_ID \
-  --region $AWS_REGION \
-  --backup-retention-period 7 \
-  --preferred-backup-window "03:00-05:00" \
-  --preferred-maintenance-window "sun:05:00-sun:07:00" \
-  --no-publicly-accessible \
-  --tags Key=Name,Value=$DB_INSTANCE_IDENTIFIER Key=AppName,Value=$APP_NAME
+# --- Check/Create RDS Instance --- 
+echo "Checking for existing RDS instance: ${APP_NAME}-db..."
+DB_INSTANCE_INFO=$(aws rds describe-db-instances --db-instance-identifier "${APP_NAME}-db" --region $AWS_REGION 2>/dev/null)
 
-# ===>>> Add error check immediately after creation attempt <<<===
-if [ $? -ne 0 ]; then
-    echo "!!! Failed to initiate RDS Instance creation. Please check the AWS error message above. !!!"
-    exit 1
+if [ $? -eq 0 ]; then
+    # Instance exists, extract info
+    DB_INSTANCE_STATUS=$(echo "$DB_INSTANCE_INFO" | jq -r '.DBInstances[0].DBInstanceStatus')
+    RDS_ENDPOINT=$(echo "$DB_INSTANCE_INFO" | jq -r '.DBInstances[0].Endpoint.Address')
+    echo "Found existing RDS instance ${APP_NAME}-db with status: $DB_INSTANCE_STATUS"
+
+    # Wait if it's not available
+    if [ "$DB_INSTANCE_STATUS" != "available" ]; then
+        echo "Waiting for instance ${APP_NAME}-db to become available..."
+        aws rds wait db-instance-available --db-instance-identifier "${APP_NAME}-db" --region $AWS_REGION
+        if [ $? -ne 0 ]; then
+            echo "Error: Wait failed. Instance ${APP_NAME}-db did not become available."
+            exit 1
+        fi
+        # Re-fetch endpoint after becoming available (might not be present during creation)
+        RDS_ENDPOINT=$(aws rds describe-db-instances --db-instance-identifier "${APP_NAME}-db" --query 'DBInstances[0].Endpoint.Address' --output text --region $AWS_REGION)
+        echo "Instance ${APP_NAME}-db is now available."
+    fi
+    if [ -z "$RDS_ENDPOINT" ] || [ "$RDS_ENDPOINT" == "None" ]; then
+         echo "Error: Could not retrieve endpoint address for existing instance ${APP_NAME}-db."
+         exit 1
+    fi
+else
+    # Instance does not exist, create it
+    echo "RDS instance ${APP_NAME}-db not found. Creating..."
+    aws rds create-db-instance \
+      --db-instance-identifier "${APP_NAME}-db" \
+      --db-instance-class $DB_INSTANCE_CLASS \
+      --engine postgres \
+      --engine-version $DB_ENGINE_VERSION \
+      --allocated-storage $DB_STORAGE \
+      --db-name $DB_NAME \
+      --master-username $DB_USERNAME \
+      --master-user-password $DB_PASSWORD \
+      --vpc-security-group-ids $SECURITY_GROUP_ID \
+      --db-subnet-group-name $DB_SUBNET_GROUP_NAME \
+      --no-publicly-accessible \
+      --backup-retention-period 7 \
+      --port 5432 \
+      --multi-az=false \
+      --storage-type gp3 \
+      --no-enable-iam-database-authentication \
+      --no-enable-performance-insights \
+      --no-auto-minor-version-upgrade \
+      --copy-tags-to-snapshot \
+      --deletion-protection=false \
+      --region $AWS_REGION \
+      --tags Key=AppName,Value=$APP_NAME
+
+    if [ $? -ne 0 ]; then echo "Failed to start creating RDS instance"; exit 1; fi
+
+    echo "Waiting for instance ${APP_NAME}-db to become available (this can take 5-10 minutes)..."
+    aws rds wait db-instance-available --db-instance-identifier "${APP_NAME}-db" --region $AWS_REGION
+    if [ $? -ne 0 ]; then
+        echo "Error: Wait failed. Instance ${APP_NAME}-db did not become available after creation."
+        # Attempt to describe anyway in case wait failed but instance is usable
+        DB_INSTANCE_INFO=$(aws rds describe-db-instances --db-instance-identifier "${APP_NAME}-db" --region $AWS_REGION 2>/dev/null)
+        if [ $? -ne 0 ]; then
+             echo "Could not describe instance after failed wait. Exiting."
+             exit 1
+        fi
+    fi
+    echo "Instance ${APP_NAME}-db is now available."
+    # Get endpoint after creation
+    RDS_ENDPOINT=$(aws rds describe-db-instances --db-instance-identifier "${APP_NAME}-db" --query 'DBInstances[0].Endpoint.Address' --output text --region $AWS_REGION)
+     if [ -z "$RDS_ENDPOINT" ] || [ "$RDS_ENDPOINT" == "None" ]; then
+         echo "Error: Could not retrieve endpoint address after creating instance ${APP_NAME}-db."
+         exit 1
+    fi
 fi
+# --- End Check/Create RDS Instance ---
 
-echo "RDS instance creation initiated. This may take several minutes."
-echo "You can check the status in the AWS RDS Console."
-
-# Wait for the RDS instance to become available
-echo "Waiting for RDS instance to become available..."
-aws rds wait db-instance-available --db-instance-identifier ${APP_NAME}-db
-
-# Get the RDS endpoint
-RDS_ENDPOINT=$(aws rds describe-db-instances \
-  --db-instance-identifier ${APP_NAME}-db \
-  --query 'DBInstances[0].Endpoint.Address' \
-  --output text)
-
-echo "RDS endpoint: $RDS_ENDPOINT"
+echo "RDS instance endpoint: $RDS_ENDPOINT"
 
 # Save RDS configuration to a file (Ensure SECURITY_GROUP_ID is saved)
 cat > "$SCRIPT_DIR/rds-config.sh" << EOF

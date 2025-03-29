@@ -8,31 +8,30 @@ source "$SCRIPT_DIR/01-setup-variables.sh"
 
 echo "Creating ECR repository..."
 
-# Check if repository exists
-REPOSITORY_EXISTS=$(aws ecr describe-repositories \
-  --repository-names $ECR_REPOSITORY_NAME \
-  --query 'repositories[0].repositoryName' \
-  --output text 2>/dev/null || echo "")
+ECR_REPOSITORY_NAME="${APP_NAME}-repo"
 
-if [ -z "$REPOSITORY_EXISTS" ]; then
-  # Create repository
-  aws ecr create-repository \
-    --repository-name $ECR_REPOSITORY_NAME \
-    --image-scanning-configuration scanOnPush=true \
-    --image-tag-mutability MUTABLE
+echo "Checking for existing ECR repository: $ECR_REPOSITORY_NAME..."
+REPOSITORY_URI=$(aws ecr describe-repositories --repository-names $ECR_REPOSITORY_NAME --query 'repositories[0].repositoryUri' --output text --region $AWS_REGION 2>/dev/null)
 
-  echo "Created ECR repository: $ECR_REPOSITORY_NAME"
+if [ $? -eq 0 ]; then
+    echo "Found existing ECR repository: $REPOSITORY_URI"
 else
-  echo "Repository already exists: $ECR_REPOSITORY_NAME"
+    echo "ECR repository $ECR_REPOSITORY_NAME not found. Creating..."
+    REPOSITORY_URI=$(aws ecr create-repository \
+      --repository-name $ECR_REPOSITORY_NAME \
+      --image-scanning-configuration scanOnPush=true \
+      --image-tag-mutability IMMUTABLE \
+      --region $AWS_REGION \
+      --tags Key=AppName,Value=$APP_NAME \
+      --query 'repository.repositoryUri' \
+      --output text)
+
+    if [ $? -ne 0 ] || [ -z "$REPOSITORY_URI" ]; then
+        echo "Error: Failed to create ECR repository $ECR_REPOSITORY_NAME"
+        exit 1
+    fi
+    echo "Created ECR repository: $REPOSITORY_URI"
 fi
-
-# Get repository URI
-REPOSITORY_URI=$(aws ecr describe-repositories \
-  --repository-names $ECR_REPOSITORY_NAME \
-  --query 'repositories[0].repositoryUri' \
-  --output text)
-
-echo "Repository URI: $REPOSITORY_URI"
 
 # Save ECR configuration to a file
 cat > "$SCRIPT_DIR/ecr-config.sh" << EOF

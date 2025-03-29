@@ -14,14 +14,36 @@ source "$SCRIPT_DIR/secrets-config.sh"
 
 echo "Creating ECS resources..."
 
-# Create ECS cluster
-aws ecs create-cluster \
-  --cluster-name ${APP_NAME}-cluster \
-  --capacity-providers FARGATE FARGATE_SPOT \
-  --default-capacity-provider-strategy capacityProvider=FARGATE_SPOT,weight=1 \
-  --region $AWS_REGION
+# --- Check/Create ECS Cluster ---
+echo "Checking for existing ECS cluster: ${APP_NAME}-cluster..."
+CLUSTER_STATUS=$(aws ecs describe-clusters --clusters "${APP_NAME}-cluster" --query 'clusters[0].status' --output text --region $AWS_REGION 2>/dev/null)
 
-echo "Created ECS cluster: ${APP_NAME}-cluster"
+if [ $? -eq 0 ] && [ "$CLUSTER_STATUS" == "ACTIVE" ]; then
+    echo "Found active ECS cluster: ${APP_NAME}-cluster"
+else
+    if [ $? -eq 0 ]; then # Found but not active
+        echo "Found ECS cluster ${APP_NAME}-cluster, but status is $CLUSTER_STATUS. Will attempt to use."
+        # Or consider exiting if status is DELETING or FAILED
+        if [ "$CLUSTER_STATUS" == "INACTIVE" ]; then
+            echo "Cluster is INACTIVE. Please investigate or delete manually."
+            # exit 1 # Optional: exit if inactive is unacceptable
+        fi
+    else # Not found
+        echo "ECS cluster ${APP_NAME}-cluster not found. Creating..."
+        aws ecs create-cluster \
+          --cluster-name ${APP_NAME}-cluster \
+          --capacity-providers FARGATE FARGATE_SPOT \
+          --default-capacity-provider-strategy capacityProvider=FARGATE_SPOT,weight=1 \
+          --region $AWS_REGION
+
+        if [ $? -ne 0 ]; then
+            echo "Error: Failed to create ECS cluster ${APP_NAME}-cluster"
+            exit 1
+        fi
+        echo "Created ECS cluster: ${APP_NAME}-cluster"
+    fi
+fi
+# --- End Check/Create ECS Cluster ---
 
 # Create application load balancer security group
 # --- Check/Create ALB SG ---
@@ -444,7 +466,17 @@ chmod +x "$SCRIPT_DIR/alb-config.sh"
 
 echo "ALB configuration saved to $SCRIPT_DIR/alb-config.sh"
 
-# --- Add saving SSM Policy ARN to secrets-config.sh ---
+# --- NEW: Save Target Group ARN ---
+# We need this for the cleanup script
+echo "Updating alb-config.sh with Target Group ARN..."
+if grep -q "export TARGET_GROUP_ARN=" "$SCRIPT_DIR/alb-config.sh"; then
+    sed -i "s|^export TARGET_GROUP_ARN=.*$|export TARGET_GROUP_ARN=\"$TARGET_GROUP_ARN\"|" "$SCRIPT_DIR/alb-config.sh"
+else
+    echo "export TARGET_GROUP_ARN=\"$TARGET_GROUP_ARN\"" >> "$SCRIPT_DIR/alb-config.sh"
+fi
+# --- End Save Target Group ARN ---
+
+# --- Add SSM Policy Creation/Retrieval ---
 echo "Updating secrets-config.sh with SSM Policy ARN..."
 # Use grep to check if the line already exists, add if not
 if ! grep -q "export SSM_POLICY_ARN=" "$SCRIPT_DIR/secrets-config.sh"; then
