@@ -3,14 +3,15 @@
 # Get the directory where the script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 PROJECT_ROOT="$( cd "$SCRIPT_DIR/../.." && pwd )"
+CONFIG_DIR="$SCRIPT_DIR/config"
 
 # Source all the configuration files
 source "$SCRIPT_DIR/01-setup-variables.sh"
-source "$SCRIPT_DIR/vpc-config.sh"
-source "$SCRIPT_DIR/rds-config.sh"
-source "$SCRIPT_DIR/ecr-config.sh"
-source "$SCRIPT_DIR/certificate-config.sh"
-source "$SCRIPT_DIR/secrets-config.sh"
+source "$CONFIG_DIR/vpc-config.sh"
+source "$CONFIG_DIR/rds-config.sh"
+source "$CONFIG_DIR/ecr-config.sh"
+source "$CONFIG_DIR/certificate-config.sh"
+source "$CONFIG_DIR/secrets-config.sh"
 
 echo "Creating ECS resources..."
 
@@ -254,106 +255,168 @@ else
      # Optionally modify existing listener if needed (e.g., change action if HTTPS was created later)
 fi
 
-# --- Add SSM Policy Creation/Retrieval ---
+# --- Check/Create ECS Execution Role ---
+ECS_EXECUTION_ROLE_NAME="${APP_NAME}-ecs-execution-role"
+echo "Checking/Creating ECS Execution Role: $ECS_EXECUTION_ROLE_NAME..."
+ECS_EXECUTION_ROLE_ARN=$(aws iam get-role --role-name $ECS_EXECUTION_ROLE_NAME --query 'Role.Arn' --output text --region $AWS_REGION 2>/dev/null)
+
+if [ -z "$ECS_EXECUTION_ROLE_ARN" ] || [ "$ECS_EXECUTION_ROLE_ARN" == "None" ]; then
+    echo "Execution role not found. Creating..."
+    # Create trust policy file
+    ASSUME_ROLE_POLICY_DOC=$(cat <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "ecs-tasks.amazonaws.com"
+      },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
+EOF
+)
+    ECS_EXECUTION_ROLE_ARN=$(aws iam create-role \
+      --role-name $ECS_EXECUTION_ROLE_NAME \
+      --assume-role-policy-document "$ASSUME_ROLE_POLICY_DOC" \
+      --description "Role for ECS tasks to access AWS services" \
+      --query 'Role.Arn' \
+      --output text \
+      --region $AWS_REGION)
+    if [ $? -ne 0 ] || [ -z "$ECS_EXECUTION_ROLE_ARN" ]; then echo "Failed to create execution role"; exit 1; fi
+    echo "Created execution role: $ECS_EXECUTION_ROLE_ARN"
+
+    # Attach the standard ECS Task Execution Role Policy
+    echo "Attaching standard policy..."
+    aws iam attach-role-policy \
+      --role-name $ECS_EXECUTION_ROLE_NAME \
+      --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy \
+      --region $AWS_REGION
+    if [ $? -ne 0 ]; then echo "Failed to attach standard policy"; exit 1; fi
+
+else
+    echo "Found existing execution role: $ECS_EXECUTION_ROLE_ARN"
+    # Ensure standard policy is attached even if role exists
+    if ! aws iam list-attached-role-policies --role-name $ECS_EXECUTION_ROLE_NAME --query "AttachedPolicies[?PolicyArn=='arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy']" --output text --region $AWS_REGION | grep -q .; then
+        echo "Attaching standard policy to existing role..."
+        aws iam attach-role-policy \
+            --role-name $ECS_EXECUTION_ROLE_NAME \
+            --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy \
+            --region $AWS_REGION
+        if [ $? -ne 0 ]; then echo "Failed to attach standard policy"; exit 1; fi
+    fi
+fi
+
+# Remove temporary file if it exists from previous versions
+rm -f "$SCRIPT_DIR/assume-role-policy.json"
+
+# Check/Create SSM Parameter Access Policy
 SSM_POLICY_NAME="${APP_NAME}-ssm-parameter-access-policy"
+echo "Checking/Creating IAM policy for SSM access: $SSM_POLICY_NAME..."
+
+# Use hyphenated name prefix for policy resource
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-POLICY_DOCUMENT=$(cat <<EOF
+SSM_PARAMETER_ARN_PATTERN="arn:aws:ssm:${AWS_REGION}:${ACCOUNT_ID}:parameter/${APP_NAME}-*"
+
+# Check if policy exists
+SSM_POLICY_ARN=$(aws iam list-policies --scope Local --query "Policies[?PolicyName=='$SSM_POLICY_NAME'].Arn" --output text --region $AWS_REGION 2>/dev/null)
+
+if [ -z "$SSM_POLICY_ARN" ] || [ "$SSM_POLICY_ARN" == "None" ]; then
+  echo "SSM policy not found. Creating..."
+  POLICY_DOCUMENT=$(cat <<-EOF
 {
     "Version": "2012-10-17",
     "Statement": [
         {
             "Effect": "Allow",
             "Action": "ssm:GetParameters",
-            "Resource": "arn:aws:ssm:${AWS_REGION}:${ACCOUNT_ID}:parameter/${APP_NAME}-*"
+            "Resource": "$SSM_PARAMETER_ARN_PATTERN"
         }
     ]
 }
 EOF
 )
-
-echo "Checking/Creating IAM Policy for SSM access: $SSM_POLICY_NAME..."
-# Attempt to get the policy ARN if it exists
-SSM_POLICY_ARN=$(aws iam list-policies --scope Local --query "Policies[?PolicyName=='$SSM_POLICY_NAME'].Arn" --output text --region $AWS_REGION 2>/dev/null)
-
-if [ -z "$SSM_POLICY_ARN" ] || [ "$SSM_POLICY_ARN" == "None" ]; then
-    echo "SSM Policy not found. Creating..."
-    CREATE_POLICY_OUTPUT=$(aws iam create-policy \\
-      --policy-name $SSM_POLICY_NAME \\
-      --policy-document "$POLICY_DOCUMENT" \\
-      --description "Policy granting access to ${APP_NAME} SSM parameters" \\
-      --query 'Policy.Arn' \\
-      --output text \\
-      --region $AWS_REGION)
-
-    if [ $? -ne 0 ] || [ -z "$CREATE_POLICY_OUTPUT" ]; then
-        echo "Error: Failed to create IAM policy $SSM_POLICY_NAME"
-        exit 1
-    fi
-    SSM_POLICY_ARN=$CREATE_POLICY_OUTPUT
-    echo "Created IAM policy: $SSM_POLICY_NAME (ARN: $SSM_POLICY_ARN)"
+  SSM_POLICY_ARN=$(aws iam create-policy \
+    --policy-name $SSM_POLICY_NAME \
+    --policy-document "$POLICY_DOCUMENT" \
+    --description "Policy granting access to ${APP_NAME} SSM parameters named ${APP_NAME}-*" \
+    --query 'Policy.Arn' \
+    --output text \
+    --region $AWS_REGION)
+  if [ $? -ne 0 ] || [ -z "$SSM_POLICY_ARN" ]; then echo "Error: Failed to create SSM policy"; exit 1; fi
+  echo "Created SSM policy: $SSM_POLICY_ARN"
 else
-    echo "Found existing IAM policy: $SSM_POLICY_NAME (ARN: $SSM_POLICY_ARN)"
-fi
-# --- End SSM Policy Creation/Retrieval ---
-
-# Create IAM execution role for ECS tasks (Check if exists)
-ECS_EXECUTION_ROLE_NAME="${APP_NAME}-ecs-execution-role"
-echo "Checking/Creating IAM Execution Role: $ECS_EXECUTION_ROLE_NAME..."
-ECS_EXECUTION_ROLE_ARN=$(aws iam get-role --role-name $ECS_EXECUTION_ROLE_NAME --query 'Role.Arn' --output text --region $AWS_REGION 2>/dev/null)
-
-if [ -z "$ECS_EXECUTION_ROLE_ARN" ] || [ "$ECS_EXECUTION_ROLE_ARN" == "None" ]; then
-    echo "IAM Execution Role not found. Creating..."
-    # Define Assume Role Policy JSON directly as a string
-    ASSUME_ROLE_POLICY_DOC='{
-      "Version": "2012-10-17",
-      "Statement": [
-        {
-          "Effect": "Allow",
-          "Principal": { "Service": "ecs-tasks.amazonaws.com" },
-          "Action": "sts:AssumeRole"
-        }
-      ]
-    }'
-    # Create IAM execution role, passing policy as string
-    ROLE_CREATE_OUTPUT=$(aws iam create-role \
-      --role-name $ECS_EXECUTION_ROLE_NAME \
-      --assume-role-policy-document "$ASSUME_ROLE_POLICY_DOC" \
-      --query 'Role.Arn' \
-      --output text \
-      --region $AWS_REGION)
-    # Explicit error check after create-role
-    if [ $? -ne 0 ] || [ -z "$ROLE_CREATE_OUTPUT" ]; then
-        echo "Error: Failed to create IAM execution role $ECS_EXECUTION_ROLE_NAME"
-        exit 1
-    fi
-    ECS_EXECUTION_ROLE_ARN=$ROLE_CREATE_OUTPUT
-    echo "Created IAM execution role: $ECS_EXECUTION_ROLE_NAME (ARN: $ECS_EXECUTION_ROLE_ARN)"
-
-    # Policies only need attaching when role is first created
-    # Attach policies
-    aws iam attach-role-policy --role-name $ECS_EXECUTION_ROLE_NAME --policy-arn $SSM_POLICY_ARN --region $AWS_REGION
-    aws iam attach-role-policy --role-name $ECS_EXECUTION_ROLE_NAME --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy --region $AWS_REGION
-    echo "Attached policies to new role."
-    # Add a small delay to allow role/policy propagation
-    sleep 10
-
-else
-    echo "Found existing IAM execution role: $ECS_EXECUTION_ROLE_NAME (ARN: $ECS_EXECUTION_ROLE_ARN)"
-    # Optionally ensure policies are attached even if role exists
-    aws iam attach-role-policy --role-name $ECS_EXECUTION_ROLE_NAME --policy-arn $SSM_POLICY_ARN --region $AWS_REGION || echo "WARN: Failed to attach SSM policy (may already be attached)"
-    aws iam attach-role-policy --role-name $ECS_EXECUTION_ROLE_NAME --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy --region $AWS_REGION || echo "WARN: Failed to attach standard ECS policy (may already be attached)"
+  echo "SSM policy already exists: $SSM_POLICY_ARN"
 fi
 
-# Remove temporary file if it exists from previous versions
-rm -f "$SCRIPT_DIR/assume-role-policy.json"
+# Attach SSM Policy to Execution Role
+echo "Checking/Attaching SSM policy ($SSM_POLICY_ARN) to role ($ECS_EXECUTION_ROLE_NAME)..."
+POLICY_ATTACHED=$(aws iam list-attached-role-policies --role-name $ECS_EXECUTION_ROLE_NAME --query "AttachedPolicies[?PolicyArn=='$SSM_POLICY_ARN'].PolicyArn" --output text --region $AWS_REGION 2>/dev/null)
+
+if [ -z "$POLICY_ATTACHED" ] || [ "$POLICY_ATTACHED" == "None" ]; then
+  echo "Attaching SSM policy to execution role..."
+  aws iam attach-role-policy \
+    --role-name $ECS_EXECUTION_ROLE_NAME \
+    --policy-arn $SSM_POLICY_ARN \
+    --region $AWS_REGION
+  if [ $? -ne 0 ]; then echo "Error: Failed to attach SSM policy to execution role"; exit 1; fi
+  echo "Successfully attached SSM policy to execution role"
+else
+  echo "SSM policy is already attached to the execution role"
+fi
+
+# Save/Update SSM Policy ARN in secrets-config.sh
+echo "Updating secrets-config.sh with SSM Policy ARN..."
+SECRETS_CONFIG_FILE="$CONFIG_DIR/secrets-config.sh"
+TEMP_SECRETS_CONFIG="$CONFIG_DIR/secrets-config.sh.tmp"
+# Create or overwrite temp file
+echo "#!/bin/bash" > "$TEMP_SECRETS_CONFIG"
+# Preserve existing Secret Parameter Name Prefix
+if [ -f "$SECRETS_CONFIG_FILE" ] && grep -q "export SECRET_PARAMETER_NAME_PREFIX=" "$SECRETS_CONFIG_FILE"; then
+    grep "export SECRET_PARAMETER_NAME_PREFIX=" "$SECRETS_CONFIG_FILE" >> "$TEMP_SECRETS_CONFIG"
+elif [ -n "$PARAM_NAME_PREFIX" ]; then # Fallback if grep failed but var exists
+    echo "export SECRET_PARAMETER_NAME_PREFIX=\\"$PARAM_NAME_PREFIX\\"" >> "$TEMP_SECRETS_CONFIG"
+fi
+# Add/Update SSM Policy ARN
+echo "# SSM Policy ARN" >> "$TEMP_SECRETS_CONFIG"
+echo "export SSM_POLICY_ARN=\\"$SSM_POLICY_ARN\\"" >> "$TEMP_SECRETS_CONFIG"
+# Make executable and replace original
+chmod +x "$TEMP_SECRETS_CONFIG"
+mv "$TEMP_SECRETS_CONFIG" "$SECRETS_CONFIG_FILE"
+echo "SSM_POLICY_ARN updated in $SECRETS_CONFIG_FILE"
+
+# --- Check/Create ECS Task Definition ---
+# Source configs again to ensure necessary variables are loaded (like LATEST_PUSHED_TAG)
+[ -f "$CONFIG_DIR/secrets-config.sh" ] && source "$CONFIG_DIR/secrets-config.sh"
+[ -f "$CONFIG_DIR/ecr-config.sh" ] && source "$CONFIG_DIR/ecr-config.sh" # Source ECR config
+if [ -z "$SECRET_PARAMETER_NAME_PREFIX" ]; then echo "Error: SECRET_PARAMETER_NAME_PREFIX not found in $CONFIG_DIR/secrets-config.sh."; exit 1; fi
+if [ -z "$REPOSITORY_URI" ]; then echo "Error: REPOSITORY_URI not found in $CONFIG_DIR/ecr-config.sh."; exit 1; fi
+if [ -z "$LATEST_PUSHED_TAG" ]; then echo "Error: LATEST_PUSHED_TAG not found in $CONFIG_DIR/ecr-config.sh. Run 06-build-push-docker.sh first."; exit 1; fi
+
+# --- FIX: Explicitly get AWS Account ID before creating Task Definition JSON --- 
+echo "Retrieving AWS Account ID..."
+AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text --region $AWS_REGION)
+if [ -z "$AWS_ACCOUNT_ID" ]; then 
+    echo "Error: Could not determine AWS Account ID using sts get-caller-identity."
+    exit 1
+fi
+echo "Using Account ID: $AWS_ACCOUNT_ID"
+# --- END FIX ---
 
 # Create task definition JSON content as a variable
-echo "Preparing Task Definition JSON content..."
+echo "Preparing Task Definition JSON content using image tag: $LATEST_PUSHED_TAG..."
 TASK_DEFINITION_JSON=$(cat <<EOF
 {
   "family": "${APP_NAME}-task",
   "networkMode": "awsvpc",
   "executionRoleArn": "${ECS_EXECUTION_ROLE_ARN}",
+  # taskRoleArn defines permissions for the application code itself.
+  # Using the execution role ARN here grants the application the same permissions 
+  # needed for setup (ECR pull, CW Logs, SSM GetParameters).
+  # If your application needs specific AWS permissions (e.g., S3 access), 
+  # create a separate IAM role with *only* those permissions and specify its ARN here.
   "taskRoleArn": "${ECS_EXECUTION_ROLE_ARN}",
   "requiresCompatibilities": ["FARGATE"],
   "cpu": "${ECS_TASK_CPU}",
@@ -361,26 +424,26 @@ TASK_DEFINITION_JSON=$(cat <<EOF
   "containerDefinitions": [
     {
       "name": "${ECS_CONTAINER_NAME}",
-      "image": "${REPOSITORY_URI}:latest",
+      "image": "${REPOSITORY_URI}:${LATEST_PUSHED_TAG}",
       "essential": true,
       "portMappings": [ { "containerPort": ${ECS_CONTAINER_PORT}, "protocol": "tcp" } ],
       "logConfiguration": { "logDriver": "awslogs", "options": { "awslogs-group": "/ecs/${APP_NAME}", "awslogs-region": "${AWS_REGION}", "awslogs-stream-prefix": "ecs", "awslogs-create-group": "true" } },
       "secrets": [
-         {"name": "DATABASE_URL", "valueFrom": "${SECRET_PARAMETER_NAME_PREFIX}-DATABASE_URL"},
-         {"name": "DIRECT_URL", "valueFrom": "${SECRET_PARAMETER_NAME_PREFIX}-DIRECT_URL"},
-         {"name": "NEXT_PUBLIC_APP_URL", "valueFrom": "${SECRET_PARAMETER_NAME_PREFIX}-NEXT_PUBLIC_APP_URL"},
-         {"name": "NEXTAUTH_URL", "valueFrom": "${SECRET_PARAMETER_NAME_PREFIX}-NEXTAUTH_URL"},
-         {"name": "NEXTAUTH_SECRET", "valueFrom": "${SECRET_PARAMETER_NAME_PREFIX}-NEXTAUTH_SECRET"},
-         {"name": "EMAIL_SERVER_HOST", "valueFrom": "${SECRET_PARAMETER_NAME_PREFIX}-EMAIL_SERVER_HOST"},
-         {"name": "EMAIL_SERVER_PORT", "valueFrom": "${SECRET_PARAMETER_NAME_PREFIX}-EMAIL_SERVER_PORT"},
-         {"name": "EMAIL_SERVER_USER", "valueFrom": "${SECRET_PARAMETER_NAME_PREFIX}-EMAIL_SERVER_USER"},
-         {"name": "EMAIL_SERVER_PASSWORD", "valueFrom": "${SECRET_PARAMETER_NAME_PREFIX}-EMAIL_SERVER_PASSWORD"},
-         {"name": "EMAIL_FROM", "valueFrom": "${SECRET_PARAMETER_NAME_PREFIX}-EMAIL_FROM"},
-         {"name": "GOOGLE_CLIENT_ID", "valueFrom": "${SECRET_PARAMETER_NAME_PREFIX}-GOOGLE_CLIENT_ID"},
-         {"name": "GOOGLE_CLIENT_SECRET", "valueFrom": "${SECRET_PARAMETER_NAME_PREFIX}-GOOGLE_CLIENT_SECRET"},
-         {"name": "GITHUB_ID", "valueFrom": "${SECRET_PARAMETER_NAME_PREFIX}-GITHUB_ID"},
-         {"name": "GITHUB_SECRET", "valueFrom": "${SECRET_PARAMETER_NAME_PREFIX}-GITHUB_SECRET"},
-         {"name": "NODE_ENV", "valueFrom": "${SECRET_PARAMETER_NAME_PREFIX}-NODE_ENV"}
+         {"name": "DATABASE_URL", "valueFrom": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/${SECRET_PARAMETER_NAME_PREFIX}-DATABASE_URL"},
+         {"name": "DIRECT_URL", "valueFrom": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/${SECRET_PARAMETER_NAME_PREFIX}-DIRECT_URL"},
+         {"name": "NEXT_PUBLIC_APP_URL", "valueFrom": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/${SECRET_PARAMETER_NAME_PREFIX}-NEXT_PUBLIC_APP_URL"},
+         {"name": "NEXTAUTH_URL", "valueFrom": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/${SECRET_PARAMETER_NAME_PREFIX}-NEXTAUTH_URL"},
+         {"name": "NEXTAUTH_SECRET", "valueFrom": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/${SECRET_PARAMETER_NAME_PREFIX}-NEXTAUTH_SECRET"},
+         {"name": "EMAIL_SERVER_HOST", "valueFrom": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/${SECRET_PARAMETER_NAME_PREFIX}-EMAIL_SERVER_HOST"},
+         {"name": "EMAIL_SERVER_PORT", "valueFrom": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/${SECRET_PARAMETER_NAME_PREFIX}-EMAIL_SERVER_PORT"},
+         {"name": "EMAIL_SERVER_USER", "valueFrom": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/${SECRET_PARAMETER_NAME_PREFIX}-EMAIL_SERVER_USER"},
+         {"name": "EMAIL_SERVER_PASSWORD", "valueFrom": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/${SECRET_PARAMETER_NAME_PREFIX}-EMAIL_SERVER_PASSWORD"},
+         {"name": "EMAIL_FROM", "valueFrom": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/${SECRET_PARAMETER_NAME_PREFIX}-EMAIL_FROM"},
+         {"name": "GOOGLE_CLIENT_ID", "valueFrom": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/${SECRET_PARAMETER_NAME_PREFIX}-GOOGLE_CLIENT_ID"},
+         {"name": "GOOGLE_CLIENT_SECRET", "valueFrom": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/${SECRET_PARAMETER_NAME_PREFIX}-GOOGLE_CLIENT_SECRET"},
+         {"name": "GITHUB_ID", "valueFrom": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/${SECRET_PARAMETER_NAME_PREFIX}-GITHUB_ID"},
+         {"name": "GITHUB_SECRET", "valueFrom": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/${SECRET_PARAMETER_NAME_PREFIX}-GITHUB_SECRET"},
+         {"name": "NODE_ENV", "valueFrom": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/${SECRET_PARAMETER_NAME_PREFIX}-NODE_ENV"}
        ],
       "healthCheck": { "command": [ "CMD-SHELL", "wget -q -O - http://localhost:${ECS_CONTAINER_PORT}/api/health || exit 1" ], "interval": 30, "timeout": 5, "retries": 3, "startPeriod": 60 }
     }
@@ -450,7 +513,8 @@ ALB_DNS_NAME=$(aws elbv2 describe-load-balancers \
 echo "Application load balancer DNS name: $ALB_DNS_NAME"
 
 # Save ALB configuration to a file
-cat > "$SCRIPT_DIR/alb-config.sh" << EOF
+ALB_CONFIG_FILE="$CONFIG_DIR/alb-config.sh"
+cat > "$ALB_CONFIG_FILE" << EOF
 #!/bin/bash
 
 # ALB Configuration
@@ -462,30 +526,18 @@ export ALB_SG_ID=$ALB_SG_ID
 export ECS_SG_ID=$ECS_SG_ID
 EOF
 
-chmod +x "$SCRIPT_DIR/alb-config.sh"
+chmod +x "$ALB_CONFIG_FILE"
 
-echo "ALB configuration saved to $SCRIPT_DIR/alb-config.sh"
+echo "ALB configuration saved to $ALB_CONFIG_FILE"
 
 # --- NEW: Save Target Group ARN ---
 # We need this for the cleanup script
-echo "Updating alb-config.sh with Target Group ARN..."
-if grep -q "export TARGET_GROUP_ARN=" "$SCRIPT_DIR/alb-config.sh"; then
-    sed -i "s|^export TARGET_GROUP_ARN=.*$|export TARGET_GROUP_ARN=\"$TARGET_GROUP_ARN\"|" "$SCRIPT_DIR/alb-config.sh"
+echo "Updating $ALB_CONFIG_FILE with Target Group ARN..."
+if grep -q "export TARGET_GROUP_ARN=" "$ALB_CONFIG_FILE"; then
+    sed -i "s|^export TARGET_GROUP_ARN=.*$|export TARGET_GROUP_ARN=\\"$TARGET_GROUP_ARN\\"|" "$ALB_CONFIG_FILE"
 else
-    echo "export TARGET_GROUP_ARN=\"$TARGET_GROUP_ARN\"" >> "$SCRIPT_DIR/alb-config.sh"
+    echo "export TARGET_GROUP_ARN=\\"$TARGET_GROUP_ARN\\"" >> "$ALB_CONFIG_FILE"
 fi
 # --- End Save Target Group ARN ---
-
-# --- Add SSM Policy Creation/Retrieval ---
-echo "Updating secrets-config.sh with SSM Policy ARN..."
-# Use grep to check if the line already exists, add if not
-if ! grep -q "export SSM_POLICY_ARN=" "$SCRIPT_DIR/secrets-config.sh"; then
-  echo "export SSM_POLICY_ARN=\"$SSM_POLICY_ARN\"" >> "$SCRIPT_DIR/secrets-config.sh"
-  echo "SSM_POLICY_ARN added to secrets-config.sh"
-else
-  # Optionally update if it exists but is different (more complex, skip for now)
-  echo "SSM_POLICY_ARN already exists in secrets-config.sh"
-fi
-# --- End saving SSM Policy ARN ---
 
 echo "ECS resources creation completed" 

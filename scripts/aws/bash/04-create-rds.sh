@@ -2,10 +2,12 @@
 
 # Get the directory where the script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+CONFIG_DIR="$SCRIPT_DIR/config"
+# Config files should exist from previous step, no need to mkdir -p here
 
 # Source the variables
 source "$SCRIPT_DIR/01-setup-variables.sh"
-source "$SCRIPT_DIR/vpc-config.sh"
+source "$CONFIG_DIR/vpc-config.sh"
 
 echo "Creating RDS PostgreSQL database..."
 
@@ -45,7 +47,7 @@ DB_SUBNET_GROUP_NAME="${APP_NAME}-subnet-group"
 echo "Checking/Updating DB Subnet Group: $DB_SUBNET_GROUP_NAME..."
 
 # Check if the subnet group exists
-aws rds describe-db-subnet-groups --db-subnet-group-name $DB_SUBNET_GROUP_NAME --region $AWS_REGION > /dev/null 2>&1
+EXISTING_SUBNET_GROUP_INFO=$(aws rds describe-db-subnet-groups --db-subnet-group-name $DB_SUBNET_GROUP_NAME --region $AWS_REGION 2>/dev/null)
 
 if [ $? -ne 0 ]; then
   # Subnet group does not exist, create it
@@ -54,18 +56,41 @@ if [ $? -ne 0 ]; then
     --db-subnet-group-name $DB_SUBNET_GROUP_NAME \
     --subnet-ids "$PRIVATE_SUBNET_1_ID" "$PRIVATE_SUBNET_2_ID" \
     --db-subnet-group-description "Subnet group for ${APP_NAME} RDS" \
-    --tags Key=Name,Value=$DB_SUBNET_GROUP_NAME Key=AppName,Value=$APP_NAME
+    --tags Key=Name,Value=$DB_SUBNET_GROUP_NAME Key=AppName,Value=$APP_NAME \
+    --region $AWS_REGION # Added region flag
   if [ $? -ne 0 ]; then echo "Failed to create DB Subnet Group"; exit 1; fi
   echo "DB Subnet Group created."
 else
-  # Subnet group exists, update it to ensure correct subnets are used
-  echo "DB Subnet Group '$DB_SUBNET_GROUP_NAME' already exists. Updating with current private subnets..."
-  aws rds modify-db-subnet-group \
-    --db-subnet-group-name $DB_SUBNET_GROUP_NAME \
-    --subnet-ids "$PRIVATE_SUBNET_1_ID" "$PRIVATE_SUBNET_2_ID" \
-    --db-subnet-group-description "Subnet group for ${APP_NAME} RDS" # Description update is optional but good practice
-  if [ $? -ne 0 ]; then echo "Failed to modify DB Subnet Group"; exit 1; fi
-  echo "DB Subnet Group updated successfully."
+  # Subnet group exists, check if it belongs to the correct VPC
+  echo "DB Subnet Group '$DB_SUBNET_GROUP_NAME' already exists. Checking VPC ID..."
+  EXISTING_VPC_ID=$(echo "$EXISTING_SUBNET_GROUP_INFO" | jq -r '.DBSubnetGroups[0].VpcId')
+  
+  if [ "$EXISTING_VPC_ID" == "$VPC_ID" ]; then
+    # VPC IDs match, safe to modify
+    echo "Existing subnet group is in the correct VPC ($VPC_ID). Updating with current private subnets..."
+    aws rds modify-db-subnet-group \
+      --db-subnet-group-name $DB_SUBNET_GROUP_NAME \
+      --subnet-ids "$PRIVATE_SUBNET_1_ID" "$PRIVATE_SUBNET_2_ID" \
+      --db-subnet-group-description "Subnet group for ${APP_NAME} RDS" \
+      --region $AWS_REGION # Added region flag
+    if [ $? -ne 0 ]; then echo "Failed to modify DB Subnet Group"; exit 1; fi
+    echo "DB Subnet Group updated successfully."
+  else
+    # VPC IDs DO NOT match - this is an orphaned group from a previous VPC
+    echo "Error: Existing DB Subnet Group '$DB_SUBNET_GROUP_NAME' belongs to a different VPC ($EXISTING_VPC_ID) than the current VPC ($VPC_ID)."
+    echo "This indicates an orphaned resource from a previous deployment."
+    echo "Attempting to delete the orphaned subnet group..."
+    aws rds delete-db-subnet-group --db-subnet-group-name $DB_SUBNET_GROUP_NAME --region $AWS_REGION
+    if [ $? -ne 0 ]; then
+      echo "Error: Failed to delete orphaned DB Subnet Group '$DB_SUBNET_GROUP_NAME'. It might still be associated with an RDS instance."
+      echo "Please manually delete the subnet group and any associated RDS instances from VPC '$EXISTING_VPC_ID' before re-running."
+      exit 1
+    else
+      echo "Orphaned DB Subnet Group deleted. Re-running the script should now create a new one in the correct VPC."
+      echo "Please re-run the deployment script (00-deploy-all.sh)."
+      exit 1 # Exit cleanly asking the user to re-run
+    fi
+  fi
 fi
 
 # --- Check/Create RDS Instance --- 
@@ -102,7 +127,7 @@ else
       --db-instance-class $DB_INSTANCE_CLASS \
       --engine postgres \
       --engine-version $DB_ENGINE_VERSION \
-      --allocated-storage $DB_STORAGE \
+      --allocated-storage $DB_ALLOCATED_STORAGE \
       --db-name $DB_NAME \
       --master-username $DB_USERNAME \
       --master-user-password $DB_PASSWORD \
@@ -111,13 +136,13 @@ else
       --no-publicly-accessible \
       --backup-retention-period 7 \
       --port 5432 \
-      --multi-az=false \
+      --no-multi-az \
       --storage-type gp3 \
       --no-enable-iam-database-authentication \
       --no-enable-performance-insights \
       --no-auto-minor-version-upgrade \
       --copy-tags-to-snapshot \
-      --deletion-protection=false \
+      --no-deletion-protection \
       --region $AWS_REGION \
       --tags Key=AppName,Value=$APP_NAME
 
@@ -147,7 +172,8 @@ fi
 echo "RDS instance endpoint: $RDS_ENDPOINT"
 
 # Save RDS configuration to a file (Ensure SECURITY_GROUP_ID is saved)
-cat > "$SCRIPT_DIR/rds-config.sh" << EOF
+RDS_CONFIG_FILE="$CONFIG_DIR/rds-config.sh"
+cat > "$RDS_CONFIG_FILE" << EOF
 #!/bin/bash
 
 # RDS Configuration
@@ -155,10 +181,10 @@ export RDS_ENDPOINT=$RDS_ENDPOINT
 export SECURITY_GROUP_ID=$SECURITY_GROUP_ID # <-- Ensure this is saved
 export DB_NAME=$DB_NAME
 export DB_USERNAME=$DB_USERNAME # <-- Use the variable, not hardcoded 'admin'
-export DB_PASSWORD='$DB_PASSWORD' # <-- Use single quotes to preserve special chars if any
+export DB_PASSWORD=\'$DB_PASSWORD\' # <-- Use single quotes to preserve special chars if any
 EOF
 
-chmod +x "$SCRIPT_DIR/rds-config.sh"
+chmod +x "$RDS_CONFIG_FILE"
 
-echo "RDS configuration saved to $SCRIPT_DIR/rds-config.sh"
+echo "RDS configuration saved to $RDS_CONFIG_FILE"
 echo "RDS creation completed!" 

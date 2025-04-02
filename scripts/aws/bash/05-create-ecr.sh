@@ -2,6 +2,8 @@
 
 # Get the directory where the script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+CONFIG_DIR="$SCRIPT_DIR/config"
+# Config files should exist from previous step, no need to mkdir -p here
 
 # Source the variables
 source "$SCRIPT_DIR/01-setup-variables.sh"
@@ -34,14 +36,15 @@ else
 fi
 
 # Save ECR configuration to a file
-cat > "$SCRIPT_DIR/ecr-config.sh" << EOF
+ECR_CONFIG_FILE="$CONFIG_DIR/ecr-config.sh"
+cat > "$ECR_CONFIG_FILE" << EOF
 #!/bin/bash
 
 # ECR Configuration
 export REPOSITORY_URI=$REPOSITORY_URI
 EOF
 
-chmod +x "$SCRIPT_DIR/ecr-config.sh"
+chmod +x "$ECR_CONFIG_FILE"
 
-echo "ECR configuration saved to $SCRIPT_DIR/ecr-config.sh"
+echo "ECR configuration saved to $ECR_CONFIG_FILE"
 echo "ECR repository creation completed!" 

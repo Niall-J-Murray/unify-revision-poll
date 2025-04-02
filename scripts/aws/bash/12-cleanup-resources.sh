@@ -4,402 +4,543 @@
 # Use with extreme caution.
 
 # --- Source Configs FIRST --- 
-# Get the directory where the script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+CONFIG_DIR="$SCRIPT_DIR/config"
 
-# Source primary variables - needed for names and AWS_ACCOUNT_ID
-if [ -f "$SCRIPT_DIR/01-setup-variables.sh" ]; then
-    source "$SCRIPT_DIR/01-setup-variables.sh"
-else
-    echo "Error: 01-setup-variables.sh not found. Cannot determine resource names/account ID."
-    exit 1
-fi
-
-# Source other configuration files if they exist
-[ -f "$SCRIPT_DIR/vpc-config.sh" ] && source "$SCRIPT_DIR/vpc-config.sh"
-[ -f "$SCRIPT_DIR/rds-config.sh" ] && source "$SCRIPT_DIR/rds-config.sh"
-[ -f "$SCRIPT_DIR/ecr-config.sh" ] && source "$SCRIPT_DIR/ecr-config.sh"
-[ -f "$SCRIPT_DIR/certificate-config.sh" ] && source "$SCRIPT_DIR/certificate-config.sh"
-[ -f "$SCRIPT_DIR/alb-config.sh" ] && source "$SCRIPT_DIR/alb-config.sh"
-[ -f "$SCRIPT_DIR/nat-gateway-config.sh" ] && source "$SCRIPT_DIR/nat-gateway-config.sh"
-[ -f "$SCRIPT_DIR/secrets-config.sh" ] && source "$SCRIPT_DIR/secrets-config.sh"
+if [ -f "$SCRIPT_DIR/01-setup-variables.sh" ]; then source "$SCRIPT_DIR/01-setup-variables.sh"; else echo "Error: 01-setup-variables.sh not found."; exit 1; fi
+# Source other config files safely from config/
+config_files=("vpc-config.sh" "rds-config.sh" "ecr-config.sh" "certificate-config.sh" "alb-config.sh" "nat-gateway-config.sh" "secrets-config.sh" "bastion-config.sh" "ecs-config.sh")
+for cfg in "${config_files[@]}"; do
+    [ -f "$CONFIG_DIR/$cfg" ] && source "$CONFIG_DIR/$cfg"
+done
 # --- End Sourcing ---
 
-echo "AWS Resource Cleanup Script"
-echo "==========================="
+# --- Attempt to get Account ID if not in vars ---
+# Set default region if not set
+AWS_REGION=${AWS_REGION:-"eu-west-1"} 
+if [ -z "$AWS_ACCOUNT_ID" ]; then AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text --region $AWS_REGION 2>/dev/null); fi
+if [ -z "$AWS_ACCOUNT_ID" ]; then echo "Error: Could not determine AWS Account ID. Please configure AWS CLI or set AWS_ACCOUNT_ID environment variable."; exit 1; fi
+
+echo "AWS Resource Cleanup Script for '$APP_NAME' in region '$AWS_REGION' (Account: $AWS_ACCOUNT_ID)"
+echo "=================================================================="
 echo "WARNING: This will attempt to delete resources associated with the application: $APP_NAME"
 echo "It relies on configuration files created by the deployment scripts."
+
+# --- Important Notes on Cleanup --- 
+# - Order Matters: Deletion follows reverse creation order. Dependencies must be removed first.
+# - Idempotency: The script attempts to check if resources exist before deletion, but failures can occur.
+# - Dependencies: AWS prevents deletion of resources with active dependencies (e.g., VPC with running instances/endpoints/NAT GWs). 
+#   This script tries to remove known dependencies first, but complex or manually created dependencies might cause errors.
+# - Manual Verification: Always check the AWS console after running to ensure all intended resources were deleted and no orphans remain.
+# - Errors: If errors occur, note the resource causing the failure, manually investigate/delete it in the AWS console, and potentially re-run the script.
+# --- End Notes ---
+
+# --- Dynamically Load ARNs/IDs if missing from config (Best Effort) ---
+# Load Execution Role ARN from Task Def if missing
+if [ -z "$ECS_EXECUTION_ROLE_ARN" ] && [ -n "$ECS_TASK_FAMILY" ]; then
+     ECS_EXECUTION_ROLE_ARN=$(aws ecs describe-task-definition --task-definition $ECS_TASK_FAMILY --query 'taskDefinition.executionRoleArn' --output text --region $AWS_REGION 2>/dev/null)
+fi
+# Load SSM Policy ARN by name if missing
+if [ -z "$SSM_POLICY_ARN" ] && [ -n "$APP_NAME" ]; then
+    SSM_POLICY_ARN=$(aws iam list-policies --scope Local --query "Policies[?PolicyName==\`${APP_NAME}-ssm-parameter-access-policy\`].Arn" --output text --region $AWS_REGION 2>/dev/null)
+fi
+# Load ALB ARN by name if missing
+if [ -z "$ALB_ARN" ] && [ -n "$ALB_NAME" ]; then
+    ALB_ARN=$(aws elbv2 describe-load-balancers --names "$ALB_NAME" --query 'LoadBalancers[0].LoadBalancerArn' --output text --region $AWS_REGION 2>/dev/null)
+fi
+# Load Target Group ARN by name if missing
+if [ -z "$TARGET_GROUP_ARN" ] && [ -n "$ALB_TG_NAME" ]; then
+    TARGET_GROUP_ARN=$(aws elbv2 describe-target-groups --names "$ALB_TG_NAME" --query 'TargetGroups[0].TargetGroupArn' --output text --region $AWS_REGION 2>/dev/null)
+fi
+# Load VPC ID by tag if missing
+if [ -z "$VPC_ID" ] && [ -n "$APP_NAME" ]; then
+    VPC_ID=$(aws ec2 describe-vpcs --filters Name=tag:Name,Values="${APP_NAME}-vpc" --query 'Vpcs[0].VpcId' --output text --region $AWS_REGION 2>/dev/null)
+fi
+
+# --- List Resources to be Deleted (Informational) ---
 echo ""
+echo "Potential Resource Deletion Summary (based on config files & dynamic lookup):"
+# ECS
+[ -n "$ECS_SERVICE_NAME" ] && echo "- ECS Service: $ECS_SERVICE_NAME" 
+[ -n "$ECS_CLUSTER_NAME" ] && echo "- ECS Cluster: $ECS_CLUSTER_NAME" 
+[ -n "$ECS_TASK_FAMILY" ] && echo "- ECS Task Definitions (family): $ECS_TASK_FAMILY" 
+# ALB
+[ -n "$ALB_ARN" ] && echo "- ALB: $ALB_ARN" 
+[ -n "$TARGET_GROUP_ARN" ] && echo "- Target Group: $TARGET_GROUP_ARN" 
+[ -n "$ALB_ARN" ] && echo "- ALB Listeners associated with above ALB"
+# IAM
+[ -n "$ECS_EXECUTION_ROLE_ARN" ] && echo "- IAM Role: $(basename $ECS_EXECUTION_ROLE_ARN)" 
+[ -n "$SSM_POLICY_ARN" ] && echo "- IAM Policy (SSM): $SSM_POLICY_ARN" 
+[ -n "$ECS_EXECUTION_ROLE_ARN" ] && echo "- IAM Instance Profile: $(basename $ECS_EXECUTION_ROLE_ARN)" # Assuming name matches role
+# ACM
+[ -n "$CERTIFICATE_ARN" ] && echo "- ACM Certificate: $CERTIFICATE_ARN" 
+# RDS
+[ -n "$DB_INSTANCE_IDENTIFIER" ] && echo "- RDS DB Instance: $DB_INSTANCE_IDENTIFIER" 
+[ -n "$DB_SUBNET_GROUP_NAME" ] && echo "- DB Subnet Group: $DB_SUBNET_GROUP_NAME" 
+# Security Groups (Get IDs by name using VPC_ID)
+ALB_SG_ID_CHK=$(aws ec2 describe-security-groups --filters Name=group-name,Values="${APP_NAME}-alb-sg" Name=vpc-id,Values=$VPC_ID --query 'SecurityGroups[0].GroupId' --output text --region $AWS_REGION 2>/dev/null)
+ECS_SG_ID_CHK=$(aws ec2 describe-security-groups --filters Name=group-name,Values="${APP_NAME}-ecs-sg" Name=vpc-id,Values=$VPC_ID --query 'SecurityGroups[0].GroupId' --output text --region $AWS_REGION 2>/dev/null)
+DB_SG_ID_CHK=${SECURITY_GROUP_ID:-$(aws ec2 describe-security-groups --filters Name=group-name,Values="${APP_NAME}-db-sg" Name=vpc-id,Values=$VPC_ID --query 'SecurityGroups[0].GroupId\' --output text --region $AWS_REGION 2>/dev/null)}
+BASTION_SG_ID_CHK=$(aws ec2 describe-security-groups --filters Name=group-name,Values="${APP_NAME}-bastion-sg" Name=vpc-id,Values=$VPC_ID --query 'SecurityGroups[0].GroupId' --output text --region $AWS_REGION 2>/dev/null)
+VPC_DEFAULT_SG_ID_CHK=${VPC_SECURITY_GROUP_ID:-$(aws ec2 describe-security-groups --filters Name=group-name,Values="${APP_NAME}-default-sg" Name=vpc-id,Values=$VPC_ID --query 'SecurityGroups[0].GroupId\' --output text --region $AWS_REGION 2>/dev/null)}
+[ -n "$ALB_SG_ID_CHK" ] && echo "- Security Group (ALB): $ALB_SG_ID_CHK (${APP_NAME}-alb-sg)"
+[ -n "$ECS_SG_ID_CHK" ] && echo "- Security Group (ECS): $ECS_SG_ID_CHK (${APP_NAME}-ecs-sg)"
+[ -n "$DB_SG_ID_CHK" ] && echo "- Security Group (DB): $DB_SG_ID_CHK (${APP_NAME}-db-sg)"
+[ -n "$BASTION_SG_ID_CHK" ] && echo "- Security Group (Bastion): $BASTION_SG_ID_CHK (${APP_NAME}-bastion-sg)"
+[ -n "$VPC_DEFAULT_SG_ID_CHK" ] && echo "- Security Group (VPC Default): $VPC_DEFAULT_SG_ID_CHK (${APP_NAME}-default-sg)"
+# ECR
+[ -n "$ECR_REPOSITORY_NAME" ] && echo "- ECR Repository: $ECR_REPOSITORY_NAME" 
+# Bastion Host
+[ -n "$BASTION_INSTANCE_ID" ] && echo "- Bastion EC2 Instance: $BASTION_INSTANCE_ID" 
+[ -n "$BASTION_EIP_ALLOCATION_ID" ] && echo "- Bastion Elastic IP: AllocationID = $BASTION_EIP_ALLOCATION_ID" 
+# Networking
+[ -n "$NAT_GATEWAY_ID" ] && echo "- NAT Gateway: $NAT_GATEWAY_ID" 
+[ -n "$EIP_ALLOCATION_ID" ] && echo "- NAT Gateway Elastic IP: AllocationID = $EIP_ALLOCATION_ID" 
+[ -n "$PUBLIC_SUBNET_1_ID" ] && echo "- Subnets (Public): $PUBLIC_SUBNET_1_ID, $PUBLIC_SUBNET_2_ID"
+[ -n "$PRIVATE_SUBNET_1_ID" ] && echo "- Subnets (Private): $PRIVATE_SUBNET_1_ID, $PRIVATE_SUBNET_2_ID"
+[ -n "$PUBLIC_RT_ID" ] && echo "- Route Table (Public): $PUBLIC_RT_ID"
+[ -n "$PRIVATE_ROUTE_TABLE_ID" ] && echo "- Route Table (Private): $PRIVATE_ROUTE_TABLE_ID"
+[ -n "$IGW_ID" ] && echo "- Internet Gateway: $IGW_ID"
+[ -n "$VPC_ID" ] && echo "- VPC: $VPC_ID (${APP_NAME}-vpc)" 
+echo "- Config files in $SCRIPT_DIR"
+# SSM Parameters deletion is optional and commented out by default
+# [ -n "$SECRET_PARAMETER_PATH_PREFIX" ] && echo "- SSM Parameters: Path prefix $SECRET_PARAMETER_PATH_PREFIX" 
 
 # --- Confirmation Prompt ---
-echo "Resources potentially targeted for deletion in region $AWS_REGION:"
-echo "- ECS Service: ${APP_NAME}-service"
-echo "- ECS Cluster: ${APP_NAME}-cluster"
-echo "- ECS Task Definitions (family): ${APP_NAME}-task"
-echo "- ALB Listeners (HTTP/HTTPS)"
-echo "- Target Group: ${APP_NAME}-tg"
-echo "- Application Load Balancer: ${APP_NAME}-alb"
-echo "- IAM Role: ${APP_NAME}-ecs-execution-role"
-echo "- IAM Policy (Custom): feature-poll-CustomECSTaskExecutionPolicy (if created)"
-echo "- IAM Policy (SSM): ${APP_NAME}-ssm-parameter-access-policy"
-echo "- ACM Certificate: ARN = $CERTIFICATE_ARN"
-echo "- RDS DB Instance: ${APP_NAME}-db"
-echo "- DB Subnet Group: ${APP_NAME}-db-subnet-group"
-echo "- Security Groups: ${APP_NAME}-db-sg, ${APP_NAME}-ecs-sg, ${APP_NAME}-alb-sg"
-echo "- ECR Repository: ${APP_NAME}-repo"
-echo "- NAT Gateway: ID = $NAT_GATEWAY_ID"
-echo "- Elastic IP: AllocationID = $EIP_ALLOCATION_ID"
-echo "- Subnets (Public/Private)"
-echo "- Route Tables (Public/Private)"
-echo "- Internet Gateway"
-echo "- VPC: ${APP_NAME}-vpc"
-echo "- Config files in $SCRIPT_DIR"
-# echo "- SSM Parameters: ${APP_NAME}-*" # Optional - uncomment to delete
-
 echo ""
-read -p "ARE YOU ABSOLUTELY SURE you want to delete these resources? (yes/no): " CONFIRMATION
-if [ "$CONFIRMATION" != "yes" ]; then
-    echo "Cleanup aborted."
-    exit 0
-fi
-
+read -p "ARE YOU ABSOLUTELY SURE you want to PERMANENTLY DELETE these resources AND the config files in $CONFIG_DIR? (yes/no): " CONFIRMATION
+if [ "$CONFIRMATION" != "yes" ]; then echo "Cleanup aborted."; exit 0; fi
 echo "Proceeding with cleanup..."
 
-# --- Deletion Steps (Reverse Order) ---
+# --- Helper Function for Deletion with Checks ---
+# Usage: delete_resource "ResourceType" "Identifier" "aws delete command" ["aws check command" ["check query"]]
+delete_resource() {
+    local resource_type=$1
+    local identifier=$2 
+    local delete_cmd=$3
+    local check_cmd=$4 # Optional: Command to check existence (e.g., describe)
+    local check_query=$5 # Optional: JMESPath query for check command
 
-# 1. ECS Service - Set desired count to 0 and delete
-echo "Deleting ECS Service: ${APP_NAME}-service..."
-if aws ecs describe-services --cluster "${APP_NAME}-cluster" --services "${APP_NAME}-service" --query 'services[?status!=`INACTIVE`]' --output text --region $AWS_REGION | grep -q .; then
-    echo "Setting desired count to 0..."
-    aws ecs update-service --cluster "${APP_NAME}-cluster" --service "${APP_NAME}-service" --desired-count 0 --region $AWS_REGION
-    echo "Waiting for service tasks to drain (approx 1 min)..."
-    sleep 60 # Give time for tasks to stop
-    aws ecs delete-service --cluster "${APP_NAME}-cluster" --service "${APP_NAME}-service" --force --region $AWS_REGION || echo "WARN: Failed to delete ECS Service (may not exist or already deleting)."
+    if [ -z "$identifier" ] || [[ "$identifier" == "None" ]]; then
+        echo "Skipping $resource_type deletion: Identifier missing or 'None'."
+        return
+    fi
+
+    echo "Attempting to delete $resource_type: $identifier..."
+    
+    # Check if exists before trying to delete (if check command provided)
+    local exists=true
+    if [ -n "$check_cmd" ]; then
+        # Construct check command with potential identifier argument
+        local full_check_cmd="$check_cmd" 
+        # Add identifier - requires specific handling based on command structure
+        # This part is tricky to generalize; we'll rely on delete failing if not found
+        # Example: if [[ $check_cmd == *describe* ]]; then full_check_cmd+=" --some-id $identifier"; fi 
+        
+        # Simpler check: Execute check and see if it returns non-empty output/success
+        if [ -n "$check_query" ]; then
+             CHECK_OUTPUT=$($check_cmd --query "$check_query" --output text --region $AWS_REGION 2>/dev/null)
+             if ! echo "$CHECK_OUTPUT" | grep -q .; then exists=false; fi # Check if output is non-empty
+        elif ! $check_cmd > /dev/null 2>&1; then # Check based on exit code if no query
+             exists=false
+        fi
+
+        if [ "$exists" = false ]; then
+             echo "$resource_type $identifier does not exist or already deleted."
+             return
+        fi
+    fi
+
+    # Execute deletion command
+    eval $delete_cmd # Use eval carefully if delete_cmd contains complex structures
+    local exit_code=$?
+    
+    # Provide feedback based on exit code
+    if [ $exit_code -ne 0 ]; then
+        echo "WARN: Command '$delete_cmd' failed (Exit Code: $exit_code). $resource_type $identifier might be in use, already deleting, or requires dependencies removed first."
+    else
+        echo "Successfully initiated/completed deletion for $resource_type $identifier."
+    fi
+    # Return the exit code for potential chaining/error handling
+    return $exit_code
+}
+
+
+# --- Deletion Steps (Reverse Order of Creation) ---
+
+# 1. ECS Service (Scale down first)
+echo "\n--- Step 1: ECS Service ---"
+if [ -n "$ECS_CLUSTER_NAME" ] && [ -n "$ECS_SERVICE_NAME" ]; then
+    SERVICE_CHECK_CMD="aws ecs describe-services --cluster $ECS_CLUSTER_NAME --services $ECS_SERVICE_NAME --region $AWS_REGION"
+    SERVICE_CHECK_QUERY='services[?status!=`INACTIVE`]'
+    if $SERVICE_CHECK_CMD --query "$SERVICE_CHECK_QUERY" --output text 2>/dev/null | grep -q .; then
+        echo "Setting desired count to 0 for $ECS_SERVICE_NAME..."
+        aws ecs update-service --cluster $ECS_CLUSTER_NAME --service $ECS_SERVICE_NAME --desired-count 0 --region $AWS_REGION
+        echo "Waiting for service tasks to drain (approx 1 min)..."
+        sleep 60 # Give time for tasks to stop
+        delete_resource "ECS Service" $ECS_SERVICE_NAME "aws ecs delete-service --cluster $ECS_CLUSTER_NAME --service $ECS_SERVICE_NAME --force --region $AWS_REGION"
+    else
+        echo "ECS Service $ECS_SERVICE_NAME not found or inactive."
+    fi
 else
-    echo "ECS Service not found or inactive."
+    echo "Skipping ECS Service deletion: Cluster or Service name missing."
 fi
 
-# 2. ECS Task Definitions - Deregister all revisions
-echo "Deregistering ECS Task Definitions (family: ${APP_NAME}-task)..."
-TASK_DEFS=$(aws ecs list-task-definitions --family-prefix "${APP_NAME}-task" --status ACTIVE --query 'taskDefinitionArns[*]' --output text --region $AWS_REGION)
-if [ -n "$TASK_DEFS" ]; then
-    for task_def_arn in $TASK_DEFS; do
-        echo "Deregistering $task_def_arn"
-        aws ecs deregister-task-definition --task-definition $task_def_arn --region $AWS_REGION || echo "WARN: Failed to deregister $task_def_arn"
-    done
+# 2. ECS Task Definitions (Deregister all revisions)
+echo "\n--- Step 2: ECS Task Definitions ---"
+if [ -n "$ECS_TASK_FAMILY" ]; then
+    echo "Deregistering ECS Task Definitions (family: $ECS_TASK_FAMILY)..."
+    TASK_DEFS=$(aws ecs list-task-definitions --family-prefix "$ECS_TASK_FAMILY" --status ACTIVE --query 'taskDefinitionArns[*]' --output text --region $AWS_REGION 2>/dev/null)
+    if [ -n "$TASK_DEFS" ]; then
+        for task_def_arn in $TASK_DEFS; do
+            # No easy check command, just attempt delete
+            delete_resource "Task Definition" $task_def_arn "aws ecs deregister-task-definition --task-definition $task_def_arn --region $AWS_REGION"
+        done
+    else
+        echo "No active task definitions found for family $ECS_TASK_FAMILY."
+    fi
 else
-    echo "No active task definitions found for family ${APP_NAME}-task."
+    echo "Skipping Task Definition deregistration: Family name missing."
 fi
 
 # 3. ALB Listeners
-echo "Deleting ALB Listeners..."
-if [ ! -z "$ALB_ARN" ]; then
-    LISTENER_ARNS=$(aws elbv2 describe-listeners --load-balancer-arn $ALB_ARN --query 'Listeners[*].ListenerArn' --output text --region $AWS_REGION)
+echo "\n--- Step 3: ALB Listeners ---"
+if [ -n "$ALB_ARN" ]; then
+    LISTENER_ARNS=$(aws elbv2 describe-listeners --load-balancer-arn $ALB_ARN --query 'Listeners[*].ListenerArn' --output text --region $AWS_REGION 2>/dev/null)
     if [ -n "$LISTENER_ARNS" ]; then
         for listener_arn in $LISTENER_ARNS; do
-            echo "Deleting Listener $listener_arn"
-            aws elbv2 delete-listener --listener-arn $listener_arn --region $AWS_REGION || echo "WARN: Failed to delete Listener $listener_arn"
+             delete_resource "ALB Listener" $listener_arn "aws elbv2 delete-listener --listener-arn $listener_arn --region $AWS_REGION"
         done
     else
         echo "No listeners found for ALB $ALB_ARN."
     fi
 else
-    echo "Skipping listener deletion: ALB ARN not found in config."
+    echo "Skipping listener deletion: ALB ARN not found."
 fi
 
 # 4. Target Group
-echo "Deleting Target Group: ${APP_NAME}-tg..."
-if [ ! -z "$TARGET_GROUP_ARN" ]; then # Assuming TARGET_GROUP_ARN is saved somewhere - need to add this to script 09!
-    # Let's query by name instead for robustness
-    TG_ARN_QUERY=$(aws elbv2 describe-target-groups --names "${APP_NAME}-tg" --query 'TargetGroups[0].TargetGroupArn' --output text --region $AWS_REGION 2>/dev/null)
-    if [ ! -z "$TG_ARN_QUERY" ] && [ "$TG_ARN_QUERY" != "None" ]; then
-        aws elbv2 delete-target-group --target-group-arn $TG_ARN_QUERY --region $AWS_REGION || echo "WARN: Failed to delete Target Group ${APP_NAME}-tg"
-    else
-        echo "Target Group ${APP_NAME}-tg not found."
-    fi
+echo "\n--- Step 4: Target Group ---"
+# Use ARN if available, otherwise try name
+TG_IDENTIFIER=${TARGET_GROUP_ARN:-$ALB_TG_NAME}
+TG_CHECK_PARAM=${TARGET_GROUP_ARN:+--target-group-arns $TARGET_GROUP_ARN} 
+TG_CHECK_PARAM=${TG_CHECK_PARAM:-${ALB_TG_NAME:+--names $ALB_TG_NAME}}
+DELETE_PARAM=${TARGET_GROUP_ARN:+--target-group-arn $TARGET_GROUP_ARN} # Delete requires ARN
+
+if [ -n "$DELETE_PARAM" ]; then
+    delete_resource "Target Group" $TG_IDENTIFIER "aws elbv2 delete-target-group $DELETE_PARAM --region $AWS_REGION" "aws elbv2 describe-target-groups $TG_CHECK_PARAM --region $AWS_REGION" 'TargetGroups[0]' 
+elif [ -n "$ALB_TG_NAME" ]; then
+     echo "WARN: Target Group ARN missing, attempting to find by name ($ALB_TG_NAME) to delete..."
+     TG_ARN_FOUND=$(aws elbv2 describe-target-groups --names "$ALB_TG_NAME" --query 'TargetGroups[0].TargetGroupArn' --output text --region $AWS_REGION 2>/dev/null)
+     if [ -n "$TG_ARN_FOUND" ] && [ "$TG_ARN_FOUND" != "None" ]; then
+         delete_resource "Target Group" $TG_ARN_FOUND "aws elbv2 delete-target-group --target-group-arn $TG_ARN_FOUND --region $AWS_REGION"
+     else
+         echo "Could not find Target Group by name $ALB_TG_NAME to delete."
+     fi
 else
-     echo "WARN: Target Group ARN not found in config (Script 09 needs to save it)."
+    echo "Skipping Target Group deletion: ARN and Name missing."
 fi
 
 
 # 5. Application Load Balancer
-echo "Deleting Application Load Balancer: ${APP_NAME}-alb..."
-if [ ! -z "$ALB_ARN" ]; then
-    aws elbv2 delete-load-balancer --load-balancer-arn $ALB_ARN --region $AWS_REGION || echo "WARN: Failed to delete ALB $ALB_ARN (allow ~1 min for listeners/TGs to detach)."
+echo "\n--- Step 5: Application Load Balancer ---"
+if [ -n "$ALB_ARN" ]; then
+    delete_resource "ALB" $ALB_ARN "aws elbv2 delete-load-balancer --load-balancer-arn $ALB_ARN --region $AWS_REGION" "aws elbv2 describe-load-balancers --load-balancer-arns $ALB_ARN --region $AWS_REGION" 'LoadBalancers[0]'
     echo "Waiting for ALB deletion (approx 1 min)..."
     sleep 60
-else
-    echo "Skipping ALB deletion: ALB ARN not found in config."
 fi
 
 # 6. ACM Certificate
-echo "Deleting ACM Certificate: $CERTIFICATE_ARN..."
-if [ ! -z "$CERTIFICATE_ARN" ]; then
-    aws acm delete-certificate --certificate-arn $CERTIFICATE_ARN --region $AWS_REGION || echo "WARN: Failed to delete ACM Certificate $CERTIFICATE_ARN (may already be deleted or in use)."
-else
-    echo "Skipping Certificate deletion: ARN not found in config."
+echo "\n--- Step 6: ACM Certificate ---"
+if [ -n "$CERTIFICATE_ARN" ]; then
+    delete_resource "ACM Certificate" $CERTIFICATE_ARN "aws acm delete-certificate --certificate-arn $CERTIFICATE_ARN --region $AWS_REGION" "aws acm describe-certificate --certificate-arn $CERTIFICATE_ARN --region $AWS_REGION" 'Certificate'
 fi
 
 # 7. Detach & Delete IAM Policies and Role
-CUSTOM_POLICY_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:policy/feature-poll-CustomECSTaskExecutionPolicy"
-SSM_POLICY_NAME="${APP_NAME}-ssm-parameter-access-policy"
-ROLE_NAME="${APP_NAME}-ecs-execution-role"
-INSTANCE_PROFILE_NAME=$ROLE_NAME # Usually same name
+echo "\n--- Step 7: IAM Role, Policies, Instance Profile ---"
+ROLE_NAME=$(basename "$ECS_EXECUTION_ROLE_ARN")
+INSTANCE_PROFILE_NAME=$ROLE_NAME # Assuming name matches
+STANDARD_ECS_POLICY="arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 
-if [ -z "$SSM_POLICY_ARN" ]; then
-    echo "SSM Policy ARN not loaded from config, trying to find by name..."
-    SSM_POLICY_ARN=$(aws iam list-policies --scope Local --query "Policies[?PolicyName=='$SSM_POLICY_NAME'].Arn" --output text --region $AWS_REGION 2>/dev/null)
-fi
+if [ -n "$ROLE_NAME" ] && [ "$ROLE_NAME" != "None" ] ; then
+    if aws iam get-role --role-name $ROLE_NAME --region $AWS_REGION > /dev/null 2>&1; then
+        echo "Detaching policies from role $ROLE_NAME..."
+        aws iam detach-role-policy --role-name $ROLE_NAME --policy-arn $STANDARD_ECS_POLICY --region $AWS_REGION || echo "WARN: Failed to detach Standard ECS Policy."
+        if [ -n "$SSM_POLICY_ARN" ] && [ "$SSM_POLICY_ARN" != "None" ]; then
+            aws iam detach-role-policy --role-name $ROLE_NAME --policy-arn $SSM_POLICY_ARN --region $AWS_REGION || echo "WARN: Failed to detach SSM Policy $SSM_POLICY_ARN."
+        fi
+        # Detach any other custom policies if known (e.g., from old script versions)
+        OLD_CUSTOM_POLICY="arn:aws:iam::${AWS_ACCOUNT_ID}:policy/feature-poll-CustomECSTaskExecutionPolicy"
+        aws iam detach-role-policy --role-name $ROLE_NAME --policy-arn $OLD_CUSTOM_POLICY --region $AWS_REGION 2>/dev/null || true 
+        
+        echo "Removing role $ROLE_NAME from instance profile $INSTANCE_PROFILE_NAME..."
+        aws iam remove-role-from-instance-profile --instance-profile-name $INSTANCE_PROFILE_NAME --role-name $ROLE_NAME --region $AWS_REGION || echo "WARN: Failed to remove role from instance profile."
 
-echo "Detaching/Deleting IAM Role, Instance Profile, and Policies for $ROLE_NAME..."
-if aws iam get-role --role-name $ROLE_NAME --query 'Role.Arn' --output text --region $AWS_REGION > /dev/null 2>&1; then
-    # Detach known policies
-    echo "Detaching Custom Policy ($CUSTOM_POLICY_ARN)..."
-    aws iam detach-role-policy --role-name $ROLE_NAME --policy-arn $CUSTOM_POLICY_ARN --region $AWS_REGION || echo "WARN: Failed to detach Custom Policy (may not be attached or ARN incorrect)."
-    echo "Detaching Standard ECS Policy (arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy)..."
-    aws iam detach-role-policy --role-name $ROLE_NAME --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy --region $AWS_REGION || echo "WARN: Failed to detach Standard Policy (may not be attached)."
-    if [ ! -z "$SSM_POLICY_ARN" ] && [ "$SSM_POLICY_ARN" != "None" ]; then
-         echo "Detaching SSM Policy ($SSM_POLICY_ARN)..."
-         aws iam detach-role-policy --role-name $ROLE_NAME --policy-arn $SSM_POLICY_ARN --region $AWS_REGION || echo "WARN: Failed to detach SSM Policy (may not be attached)."
+        echo "Waiting briefly for detachments..."
+        sleep 10
+
+        # Delete Role - Check command included in helper now
+        delete_resource "IAM Role" $ROLE_NAME "aws iam delete-role --role-name $ROLE_NAME --region $AWS_REGION" "aws iam get-role --role-name $ROLE_NAME --region $AWS_REGION"
+
+        # Delete Instance Profile
+        delete_resource "IAM Instance Profile" $INSTANCE_PROFILE_NAME "aws iam delete-instance-profile --instance-profile-name $INSTANCE_PROFILE_NAME --region $AWS_REGION" "aws iam get-instance-profile --instance-profile-name $INSTANCE_PROFILE_NAME --region $AWS_REGION"
+
     else
-        echo "WARN: SSM Policy ARN not found, cannot detach from role $ROLE_NAME by ARN."
+        echo "IAM Role $ROLE_NAME not found."
+        # Try deleting instance profile anyway
+        delete_resource "IAM Instance Profile" $INSTANCE_PROFILE_NAME "aws iam delete-instance-profile --instance-profile-name $INSTANCE_PROFILE_NAME --region $AWS_REGION" "aws iam get-instance-profile --instance-profile-name $INSTANCE_PROFILE_NAME --region $AWS_REGION"
     fi
-
-    # --- NEW: Remove role from instance profile --- 
-    echo "Removing role $ROLE_NAME from instance profile $INSTANCE_PROFILE_NAME..."
-    aws iam remove-role-from-instance-profile --instance-profile-name $INSTANCE_PROFILE_NAME --role-name $ROLE_NAME --region $AWS_REGION || echo "WARN: Failed to remove role from instance profile (may not exist or role not added)."
-
-    # Sometimes detachment takes a moment
-    echo "Waiting briefly for detachments..."
-    sleep 10 # Increased wait time
-
-    echo "Deleting IAM Role $ROLE_NAME..."
-    aws iam delete-role --role-name $ROLE_NAME --region $AWS_REGION || echo "WARN: Failed to delete IAM Role $ROLE_NAME (Check if policies/instance profile are truly detached)."
-
-    # --- NEW: Delete instance profile --- 
-    echo "Deleting instance profile $INSTANCE_PROFILE_NAME..."
-    aws iam delete-instance-profile --instance-profile-name $INSTANCE_PROFILE_NAME --region $AWS_REGION || echo "WARN: Failed to delete instance profile (may not exist)."
+    # Delete policies after detaching from role
+    if [ -n "$SSM_POLICY_ARN" ] && [ "$SSM_POLICY_ARN" != "None" ]; then
+        delete_resource "SSM IAM Policy" $SSM_POLICY_ARN "aws iam delete-policy --policy-arn $SSM_POLICY_ARN --region $AWS_REGION" "aws iam get-policy --policy-arn $SSM_POLICY_ARN --region $AWS_REGION"
+    fi
+    # Delete old custom policy if it exists
+    delete_resource "Old Custom IAM Policy" $OLD_CUSTOM_POLICY "aws iam delete-policy --policy-arn $OLD_CUSTOM_POLICY --region $AWS_REGION" "aws iam get-policy --policy-arn $OLD_CUSTOM_POLICY --region $AWS_REGION" 2>/dev/null 
 
 else
-    echo "IAM Role $ROLE_NAME not found."
-    # Try deleting instance profile anyway in case it was orphaned
-    echo "Deleting instance profile $INSTANCE_PROFILE_NAME (attempting even if role not found)..."
-    aws iam delete-instance-profile --instance-profile-name $INSTANCE_PROFILE_NAME --region $AWS_REGION || echo "WARN: Failed to delete instance profile (may not exist)."
+    echo "Skipping IAM Role/Policy deletion: Role ARN/Name missing or 'None'."
 fi
 
-# Delete policies after role (if possible)
-echo "Deleting Custom Policy ($CUSTOM_POLICY_ARN)..."
-# --- FIX: Use the variable containing the account ID --- 
-aws iam delete-policy --policy-arn "$CUSTOM_POLICY_ARN" --region $AWS_REGION || echo "WARN: Failed to delete Custom Policy (may not exist or ARN incorrect)."
-
-if [ ! -z "$SSM_POLICY_ARN" ] && [ "$SSM_POLICY_ARN" != "None" ]; then
-    echo "Deleting SSM Policy ($SSM_POLICY_ARN)..."
-    aws iam delete-policy --policy-arn "$SSM_POLICY_ARN" --region $AWS_REGION || echo "WARN: Failed to delete SSM Policy (may not exist or already deleted)."
-else
-     echo "WARN: SSM Policy ARN not found, cannot delete by ARN."
-fi
 
 # 8. RDS Instance
-echo "Deleting RDS Instance: ${APP_NAME}-db..."
-if aws rds describe-db-instances --db-instance-identifier "${APP_NAME}-db" --query 'DBInstances[0].DBInstanceIdentifier' --output text --region $AWS_REGION > /dev/null 2>&1; then
-    aws rds delete-db-instance --db-instance-identifier "${APP_NAME}-db" --skip-final-snapshot --delete-automated-backups --region $AWS_REGION || echo "WARN: Failed to initiate RDS deletion for ${APP_NAME}-db."
-    echo "Waiting for RDS deletion (can take several minutes)..."
-    aws rds wait db-instance-deleted --db-instance-identifier "${APP_NAME}-db" --region $AWS_REGION || echo "WARN: Wait for RDS deletion failed or timed out."
+echo "\n--- Step 8: RDS Instance ---"
+if [ -n "$DB_INSTANCE_IDENTIFIER" ]; then
+    DB_CHECK_CMD="aws rds describe-db-instances --db-instance-identifier $DB_INSTANCE_IDENTIFIER --region $AWS_REGION"
+    DB_CHECK_QUERY='DBInstances[0]'
+    if $DB_CHECK_CMD --query "$DB_CHECK_QUERY" --output text 2>/dev/null | grep -q .; then
+        # Need to disable deletion protection first if enabled
+        PROTECTION=$(aws rds describe-db-instances --db-instance-identifier $DB_INSTANCE_IDENTIFIER --query 'DBInstances[0].DeletionProtection' --output text --region $AWS_REGION)
+        if [ "$PROTECTION" == "true" ]; then
+            echo "Disabling deletion protection for $DB_INSTANCE_IDENTIFIER..."
+            aws rds modify-db-instance --db-instance-identifier $DB_INSTANCE_IDENTIFIER --no-deletion-protection --apply-immediately --region $AWS_REGION
+            echo "Waiting after disabling deletion protection..."
+            sleep 30
+        fi
+        
+        delete_resource "RDS Instance" $DB_INSTANCE_IDENTIFIER "aws rds delete-db-instance --db-instance-identifier $DB_INSTANCE_IDENTIFIER --skip-final-snapshot --delete-automated-backups --region $AWS_REGION"
+        
+        # Only wait if delete was attempted successfully
+        if [ $? -eq 0 ]; then
+             echo "Waiting for RDS deletion (can take several minutes)..."
+             aws rds wait db-instance-deleted --db-instance-identifier $DB_INSTANCE_IDENTIFIER --region $AWS_REGION || echo "WARN: Wait for RDS deletion failed or timed out."
+        fi
+    else
+        echo "RDS Instance $DB_INSTANCE_IDENTIFIER not found."
+    fi
 else
-    echo "RDS Instance ${APP_NAME}-db not found."
+    echo "Skipping RDS deletion: DB Instance Identifier missing."
 fi
 
 # 9. DB Subnet Group
-DB_SUBNET_GROUP_NAME_TO_DELETE="${APP_NAME}-subnet-group"
-echo "Deleting DB Subnet Group: $DB_SUBNET_GROUP_NAME_TO_DELETE..."
-# --- FIX: Check variable first --- 
-if [ -z "$DB_SUBNET_GROUP_NAME_TO_DELETE" ]; then
-    echo "Skipping DB Subnet Group deletion: Name is empty."
-elif aws rds describe-db-subnet-groups --db-subnet-group-name "$DB_SUBNET_GROUP_NAME_TO_DELETE" --query 'DBSubnetGroups[0].DBSubnetGroupName' --output text --region $AWS_REGION > /dev/null 2>&1; then
-    aws rds delete-db-subnet-group --db-subnet-group-name "$DB_SUBNET_GROUP_NAME_TO_DELETE" --region $AWS_REGION || echo "WARN: Failed to delete DB Subnet Group $DB_SUBNET_GROUP_NAME_TO_DELETE."
-else
-    echo "DB Subnet Group $DB_SUBNET_GROUP_NAME_TO_DELETE not found."
+echo "\n--- Step 9: DB Subnet Group ---"
+if [ -n "$DB_SUBNET_GROUP_NAME" ]; then
+    delete_resource "DB Subnet Group" $DB_SUBNET_GROUP_NAME \
+        "aws rds delete-db-subnet-group --db-subnet-group-name $DB_SUBNET_GROUP_NAME --region $AWS_REGION" \
+        "aws rds describe-db-subnet-groups --db-subnet-group-name $DB_SUBNET_GROUP_NAME --region $AWS_REGION" \
+        'DBSubnetGroups[0]'
 fi
 
-# 10. Remove SG Rules (Dependencies must be removed before deleting SGs)
-# Need the SG IDs - assuming they are in vpc-config.sh and rds-config.sh
-DB_SG_ID=$SECURITY_GROUP_ID # From rds-config.sh
-ALB_SG_NAME="${APP_NAME}-alb-sg"
-ECS_SG_NAME="${APP_NAME}-ecs-sg"
-DB_SG_NAME="${APP_NAME}-db-sg" # Assuming this was the name used
-
-ALB_SG_ID=$(aws ec2 describe-security-groups --filters Name=group-name,Values=$ALB_SG_NAME Name=vpc-id,Values=$VPC_ID --query 'SecurityGroups[0].GroupId' --output text --region $AWS_REGION 2>/dev/null)
-ECS_SG_ID=$(aws ec2 describe-security-groups --filters Name=group-name,Values=$ECS_SG_NAME Name=vpc-id,Values=$VPC_ID --query 'SecurityGroups[0].GroupId' --output text --region $AWS_REGION 2>/dev/null)
-# DB_SG_ID is already sourced if rds-config exists
-
-echo "Revoking Security Group Rules..."
-if [ ! -z "$DB_SG_ID" ] && [ ! -z "$ECS_SG_ID" ]; then
-    echo "Revoking DB SG rule allowing access from ECS SG..."
-    aws ec2 revoke-security-group-ingress --group-id $DB_SG_ID --protocol tcp --port 5432 --source-group $ECS_SG_ID --region $AWS_REGION || echo "WARN: Failed to revoke DB <- ECS rule."
-else
-    echo "Skipping DB <- ECS rule revocation (DB_SG_ID or ECS_SG_ID empty)."
-fi
-if [ ! -z "$ECS_SG_ID" ] && [ ! -z "$ALB_SG_ID" ]; then
-     echo "Revoking ECS SG rule allowing access from ALB SG..."
-     aws ec2 revoke-security-group-ingress --group-id $ECS_SG_ID --protocol tcp --port $ECS_CONTAINER_PORT --source-group $ALB_SG_ID --region $AWS_REGION || echo "WARN: Failed to revoke ECS <- ALB rule."
-else
-    echo "Skipping ECS <- ALB rule revocation (ECS_SG_ID or ALB_SG_ID empty)."
-fi
-# Note: Ingress rules from 0.0.0.0/0 on ALB SG are usually fine to leave until SG deletion
-
-# 11. Delete Security Groups
-echo "Deleting Security Groups..."
-# --- FIX: Add checks for empty IDs --- 
-if [ ! -z "$ECS_SG_ID" ]; then
-    aws ec2 delete-security-group --group-id $ECS_SG_ID --region $AWS_REGION || echo "WARN: Failed to delete ECS SG $ECS_SG_ID."
-else
-    echo "Skipping ECS SG deletion (ID empty)."
-fi
-if [ ! -z "$ALB_SG_ID" ]; then
-    aws ec2 delete-security-group --group-id $ALB_SG_ID --region $AWS_REGION || echo "WARN: Failed to delete ALB SG $ALB_SG_ID."
-else
-    echo "Skipping ALB SG deletion (ID empty)."
-fi
-if [ ! -z "$DB_SG_ID" ]; then
-     aws ec2 delete-security-group --group-id $DB_SG_ID --region $AWS_REGION || echo "WARN: Failed to delete DB SG $DB_SG_ID."
-else
-    echo "Skipping DB SG deletion (ID empty)."
+# 10. Bastion Host EC2 Instance
+echo "\n--- Step 10: Bastion Host ---"
+if [ -n "$BASTION_INSTANCE_ID" ]; then
+     delete_resource "Bastion EC2 Instance" $BASTION_INSTANCE_ID \
+        "aws ec2 terminate-instances --instance-ids $BASTION_INSTANCE_ID --region $AWS_REGION" \
+        "aws ec2 describe-instances --instance-ids $BASTION_INSTANCE_ID --filters Name=instance-state-name,Values=pending,running,stopping,stopped --region $AWS_REGION" \
+        'Reservations[0]'
+     if [ $? -eq 0 ]; then # Only wait if terminate succeeded
+         echo "Waiting for Bastion instance termination..."
+         aws ec2 wait instance-terminated --instance-ids $BASTION_INSTANCE_ID --region $AWS_REGION || echo "WARN: Wait for Bastion termination failed or timed out."
+     fi
 fi
 
-# 12. ECR Repository
-echo "Deleting ECR Repository: ${APP_NAME}-repo..."
-if aws ecr describe-repositories --repository-names "${APP_NAME}-repo" --region $AWS_REGION > /dev/null 2>&1; then
-    aws ecr delete-repository --repository-name "${APP_NAME}-repo" --force --region $AWS_REGION || echo "WARN: Failed to delete ECR repo ${APP_NAME}-repo."
-else
-    echo "ECR Repo ${APP_NAME}-repo not found."
+# 11. ECR Repository
+echo "\n--- Step 11: ECR Repository ---"
+if [ -n "$ECR_REPOSITORY_NAME" ]; then
+    delete_resource "ECR Repository" $ECR_REPOSITORY_NAME \
+        "aws ecr delete-repository --repository-name $ECR_REPOSITORY_NAME --force --region $AWS_REGION" \
+        "aws ecr describe-repositories --repository-names $ECR_REPOSITORY_NAME --region $AWS_REGION" \
+        'repositories[0]'
 fi
 
-# 13. NAT Gateway
-echo "Deleting NAT Gateway..."
-# Try ID from config first
-NAT_GW_TO_DELETE=$NAT_GATEWAY_ID 
-# If empty, try finding by tag
-if [ -z "$NAT_GW_TO_DELETE" ]; then
-    echo "NAT Gateway ID not loaded from config, trying to find by tag AppName=$APP_NAME..."
-    NAT_GW_TO_DELETE=$(aws ec2 describe-nat-gateways --filter "Name=tag:AppName,Values=$APP_NAME" "Name=state,Values=pending,available" --query 'NatGateways[0].NatGatewayId' --output text --region $AWS_REGION 2>/dev/null)
-fi
+# --- Network Cleanup --- 
+echo "\n--- Step 12: Network Resources --- (Security Groups, NAT GW, EIPs, Subnets, RTs, IGW, VPC)"
 
-if [ ! -z "$NAT_GW_TO_DELETE" ] && [ "$NAT_GW_TO_DELETE" != "None" ]; then
-     echo "Found NAT Gateway to delete: $NAT_GW_TO_DELETE"
-     aws ec2 delete-nat-gateway --nat-gateway-id $NAT_GW_TO_DELETE --region $AWS_REGION || echo "WARN: Failed to delete NAT Gateway $NAT_GW_TO_DELETE."
-     echo "Waiting for NAT Gateway deletion (approx 1-2 min)..."
-     aws ec2 wait nat-gateway-deleted --nat-gateway-id $NAT_GW_TO_DELETE --region $AWS_REGION || echo "WARN: Wait for NAT Gateway deletion failed or timed out."
-else
-    echo "No active NAT Gateway found to delete (either by config ID or AppName tag)."
+# 12a. Security Groups (Delete in specific order or handle dependencies)
+# It's often easier to delete dependent resources first, then SGs.
+SG_LIST=()
+[ -n "$ALB_SG_ID_CHK" ] && SG_LIST+=($ALB_SG_ID_CHK)
+[ -n "$ECS_SG_ID_CHK" ] && SG_LIST+=($ECS_SG_ID_CHK)
+[ -n "$DB_SG_ID_CHK" ] && SG_LIST+=($DB_SG_ID_CHK)
+[ -n "$BASTION_SG_ID_CHK" ] && SG_LIST+=($BASTION_SG_ID_CHK)
+# Try deleting the specific app SGs first
+for sg_id in "${SG_LIST[@]}"; do
+   if [[ "$sg_id" != *None* && -n "$sg_id" ]]; then 
+        delete_resource "Security Group" $sg_id \
+            "aws ec2 delete-security-group --group-id $sg_id --region $AWS_REGION" \
+            "aws ec2 describe-security-groups --group-ids $sg_id --region $AWS_REGION" \
+            'SecurityGroups[0]'
+   fi
+done
+# Then try deleting the default one created by script 03
+if [ -n "$VPC_DEFAULT_SG_ID_CHK" ] && [[ "$VPC_DEFAULT_SG_ID_CHK" != *None* ]]; then
+     delete_resource "VPC Default Security Group" $VPC_DEFAULT_SG_ID_CHK \
+        "aws ec2 delete-security-group --group-id $VPC_DEFAULT_SG_ID_CHK --region $AWS_REGION" \
+        "aws ec2 describe-security-groups --group-ids $VPC_DEFAULT_SG_ID_CHK --region $AWS_REGION" \
+        'SecurityGroups[0]'
 fi
+echo "Waiting briefly after SG deletion attempts..."
+sleep 15
 
-# 14. Release Elastic IP
-echo "Releasing Elastic IP..."
-# Try ID from config first
-EIP_ALLOC_TO_RELEASE=$EIP_ALLOCATION_ID
-# If empty, try finding EIP associated with the (now deleted/deleting) NAT GW - THIS IS HARD
-# Alternative: Find EIPs tagged for the app? (Requires tagging EIP in script 03)
-# Let's just rely on the config for now.
-if [ ! -z "$EIP_ALLOC_TO_RELEASE" ]; then
-    echo "Attempting to release Elastic IP with AllocationID: $EIP_ALLOC_TO_RELEASE..."
-    aws ec2 release-address --allocation-id $EIP_ALLOC_TO_RELEASE --region $AWS_REGION || echo "WARN: Failed to release Elastic IP $EIP_ALLOC_TO_RELEASE (may already be released or ID invalid)."
-else
-    echo "Skipping Elastic IP release: Allocation ID not found in config."
-fi
-
-# 15. Delete Subnets
-echo "Deleting Subnets..."
-# --- FIX: Add checks for empty IDs --- 
-if [ ! -z "$PUBLIC_SUBNET_1_ID" ]; then
-    aws ec2 delete-subnet --subnet-id $PUBLIC_SUBNET_1_ID --region $AWS_REGION || echo "WARN: Failed to delete Public Subnet 1 $PUBLIC_SUBNET_1_ID."
-else echo "Skipping Public Subnet 1 deletion (ID empty)."; fi
-if [ ! -z "$PUBLIC_SUBNET_2_ID" ]; then
-    aws ec2 delete-subnet --subnet-id $PUBLIC_SUBNET_2_ID --region $AWS_REGION || echo "WARN: Failed to delete Public Subnet 2 $PUBLIC_SUBNET_2_ID."
-else echo "Skipping Public Subnet 2 deletion (ID empty)."; fi
-if [ ! -z "$PRIVATE_SUBNET_1_ID" ]; then
-    aws ec2 delete-subnet --subnet-id $PRIVATE_SUBNET_1_ID --region $AWS_REGION || echo "WARN: Failed to delete Private Subnet 1 $PRIVATE_SUBNET_1_ID."
-else echo "Skipping Private Subnet 1 deletion (ID empty)."; fi
-if [ ! -z "$PRIVATE_SUBNET_2_ID" ]; then
-    aws ec2 delete-subnet --subnet-id $PRIVATE_SUBNET_2_ID --region $AWS_REGION || echo "WARN: Failed to delete Private Subnet 2 $PRIVATE_SUBNET_2_ID."
-else echo "Skipping Private Subnet 2 deletion (ID empty)."; fi
-
-# 16. Delete Route Tables (Try deleting custom ones, default cannot be deleted)
-PUBLIC_ROUTE_TABLE_NAME="${APP_NAME}-public-rtb"
-PRIVATE_ROUTE_TABLE_NAME="${APP_NAME}-private-rtb"
-# Try ID from config first
-PUB_RTB_TO_DELETE=$PUBLIC_ROUTE_TABLE_ID
-PRIV_RTB_TO_DELETE=$PRIVATE_ROUTE_TABLE_ID
-
-# If empty, try finding by tag
-if [ -z "$PUB_RTB_TO_DELETE" ]; then
-   PUB_RTB_TO_DELETE=$(aws ec2 describe-route-tables --filters Name=tag:Name,Values=$PUBLIC_ROUTE_TABLE_NAME Name=vpc-id,Values=$VPC_ID --query 'RouteTables[?length(Associations[?Main!=`true`]) > `0` || length(Associations)==`0`].RouteTableId' --output text --region $AWS_REGION 2>/dev/null)
-fi
-if [ -z "$PRIV_RTB_TO_DELETE" ]; then
-   PRIV_RTB_TO_DELETE=$(aws ec2 describe-route-tables --filters Name=tag:Name,Values=$PRIVATE_ROUTE_TABLE_NAME Name=vpc-id,Values=$VPC_ID --query 'RouteTables[?length(Associations[?Main!=`true`]) > `0` || length(Associations)==`0`].RouteTableId' --output text --region $AWS_REGION 2>/dev/null)
-fi
-
-echo "Deleting Custom Route Tables..."
-if [ ! -z "$PUB_RTB_TO_DELETE" ] && [ "$PUB_RTB_TO_DELETE" != "None" ]; then
-    echo "Deleting Public Route Table $PUB_RTB_TO_DELETE"
-    aws ec2 delete-route-table --route-table-id $PUB_RTB_TO_DELETE --region $AWS_REGION || echo "WARN: Failed to delete Public Route Table $PUB_RTB_TO_DELETE."
-else
-    echo "Public Route Table not found by config or tag."
-fi
-if [ ! -z "$PRIV_RTB_TO_DELETE" ] && [ "$PRIV_RTB_TO_DELETE" != "None" ]; then
-    echo "Deleting Private Route Table $PRIV_RTB_TO_DELETE"
-    aws ec2 delete-route-table --route-table-id $PRIV_RTB_TO_DELETE --region $AWS_REGION || echo "WARN: Failed to delete Private Route Table $PRIV_RTB_TO_DELETE."
-else
-     echo "Private Route Table not found by config or tag."
-fi
-
-# 17. Detach and Delete Internet Gateway
-echo "Detaching/Deleting Internet Gateway..."
-# --- FIX: Check VPC_ID --- 
-if [ -z "$VPC_ID" ]; then
-    echo "Skipping IGW deletion (VPC_ID empty)."
-else
-    IGW_ID=$(aws ec2 describe-internet-gateways --filters Name=attachment.vpc-id,Values=$VPC_ID --query 'InternetGateways[0].InternetGatewayId' --output text --region $AWS_REGION 2>/dev/null)
-    if [ ! -z "$IGW_ID" ] && [ "$IGW_ID" != "None" ]; then
-        aws ec2 detach-internet-gateway --internet-gateway-id $IGW_ID --vpc-id $VPC_ID --region $AWS_REGION || echo "WARN: Failed to detach Internet Gateway $IGW_ID."
-        aws ec2 delete-internet-gateway --internet-gateway-id $IGW_ID --region $AWS_REGION || echo "WARN: Failed to delete Internet Gateway $IGW_ID."
+# 12b. NAT Gateway
+if [ -n "$NAT_GATEWAY_ID" ]; then
+    NAT_GW_CHECK_CMD="aws ec2 describe-nat-gateways --nat-gateway-ids $NAT_GATEWAY_ID --region $AWS_REGION"
+    NAT_GW_CHECK_QUERY='NatGateways[?State!=`deleted`]'
+    if $NAT_GW_CHECK_CMD --query "$NAT_GW_CHECK_QUERY" --output text 2>/dev/null | grep -q .; then
+        delete_resource "NAT Gateway" $NAT_GATEWAY_ID "aws ec2 delete-nat-gateway --nat-gateway-id $NAT_GATEWAY_ID --region $AWS_REGION"
+        if [ $? -eq 0 ]; then # Only wait if delete command succeeded
+            echo "Waiting for NAT Gateway deletion..."
+            aws ec2 wait nat-gateway-deleted --nat-gateway-ids $NAT_GATEWAY_ID --region $AWS_REGION || echo "WARN: Wait for NAT Gateway deletion failed or timed out."
+        fi
     else
-        echo "Internet Gateway not found for VPC $VPC_ID."
+        echo "NAT Gateway $NAT_GATEWAY_ID not found or already deleted."
     fi
 fi
 
-# 18. Delete VPC
-echo "Deleting VPC: ${APP_NAME}-vpc (ID: $VPC_ID)..."
-# --- FIX: Check VPC_ID --- 
-if [ ! -z "$VPC_ID" ] && [ "$VPC_ID" != "None" ]; then
-    aws ec2 delete-vpc --vpc-id $VPC_ID --region $AWS_REGION || echo "WARN: Failed to delete VPC $VPC_ID (ensure all dependencies like subnets, RTBs, IGW, SGs are deleted)."
-else
-    echo "Skipping VPC deletion: ID not found in config or empty."
+# 12c. Elastic IPs (Release)
+if [ -n "$EIP_ALLOCATION_ID" ]; then
+    delete_resource "NAT Gateway EIP" $EIP_ALLOCATION_ID \
+        "aws ec2 release-address --allocation-id $EIP_ALLOCATION_ID --region $AWS_REGION" \
+        "aws ec2 describe-addresses --allocation-ids $EIP_ALLOCATION_ID --region $AWS_REGION" \
+        'Addresses[0]'
+fi
+if [ -n "$BASTION_EIP_ALLOCATION_ID" ]; then
+    delete_resource "Bastion EIP" $BASTION_EIP_ALLOCATION_ID \
+        "aws ec2 release-address --allocation-id $BASTION_EIP_ALLOCATION_ID --region $AWS_REGION" \
+        "aws ec2 describe-addresses --allocation-ids $BASTION_EIP_ALLOCATION_ID --region $AWS_REGION" \
+        'Addresses[0]'
 fi
 
-# 19. Delete ECS Cluster
-echo "Deleting ECS Cluster: ${APP_NAME}-cluster..."
-if aws ecs describe-clusters --clusters "${APP_NAME}-cluster" --query 'clusters[?status!=`INACTIVE`]' --output text --region $AWS_REGION | grep -q .; then
-    aws ecs delete-cluster --cluster "${APP_NAME}-cluster" --region $AWS_REGION || echo "WARN: Failed to delete ECS Cluster ${APP_NAME}-cluster (ensure service is deleted)."
-else
-    echo "ECS Cluster ${APP_NAME}-cluster not found or inactive."
+# 12d. Subnets
+SUBNET_IDS=()
+[ -n "$PUBLIC_SUBNET_1_ID" ] && SUBNET_IDS+=($PUBLIC_SUBNET_1_ID)
+[ -n "$PUBLIC_SUBNET_2_ID" ] && SUBNET_IDS+=($PUBLIC_SUBNET_2_ID)
+[ -n "$PRIVATE_SUBNET_1_ID" ] && SUBNET_IDS+=($PRIVATE_SUBNET_1_ID)
+[ -n "$PRIVATE_SUBNET_2_ID" ] && SUBNET_IDS+=($PRIVATE_SUBNET_2_ID)
+
+for subnet_id in "${SUBNET_IDS[@]}"; do
+    if [[ "$subnet_id" != *None* && -n "$subnet_id" ]]; then
+        delete_resource "Subnet" $subnet_id \
+            "aws ec2 delete-subnet --subnet-id $subnet_id --region $AWS_REGION" \
+            "aws ec2 describe-subnets --subnet-ids $subnet_id --region $AWS_REGION" \
+            'Subnets[0]'
+    fi
+done
+
+# 12e. Route Tables (Disassociate first if needed, then delete custom ones)
+# Disassociations often handled by subnet deletion. Delete custom RTs.
+if [ -n "$PUBLIC_RT_ID" ]; then
+    delete_resource "Public Route Table" $PUBLIC_RT_ID \
+        "aws ec2 delete-route-table --route-table-id $PUBLIC_RT_ID --region $AWS_REGION" \
+        "aws ec2 describe-route-tables --route-table-ids $PUBLIC_RT_ID --region $AWS_REGION" \
+        'RouteTables[0]'
+fi
+if [ -n "$PRIVATE_ROUTE_TABLE_ID" ]; then
+    delete_resource "Private Route Table" $PRIVATE_ROUTE_TABLE_ID \
+        "aws ec2 delete-route-table --route-table-id $PRIVATE_ROUTE_TABLE_ID --region $AWS_REGION" \
+        "aws ec2 describe-route-tables --route-table-ids $PRIVATE_ROUTE_TABLE_ID --region $AWS_REGION" \
+        'RouteTables[0]'
 fi
 
-# 20. Optional: Delete SSM Parameters
-# echo "Deleting SSM Parameters (prefix: ${APP_NAME}-*)..."
-# PARAM_NAMES=$(aws ssm get-parameters-by-path --path "/${APP_NAME}" --recursive --query 'Parameters[*].Name' --output text --region $AWS_REGION) # Note: SSM path uses /
-# If using hyphenated names, this path approach might not work easily. Need list-parameters + filter or delete individually.
-# echo "SSM Parameter deletion commented out for safety."
 
-# 21. Delete local config files
-echo "Deleting local configuration files..."
-rm -f "$SCRIPT_DIR/vpc-config.sh"
-rm -f "$SCRIPT_DIR/rds-config.sh"
-rm -f "$SCRIPT_DIR/ecr-config.sh"
-rm -f "$SCRIPT_DIR/certificate-config.sh"
-rm -f "$SCRIPT_DIR/alb-config.sh"
-rm -f "$SCRIPT_DIR/nat-gateway-config.sh"
-rm -f "$SCRIPT_DIR/secrets-config.sh"
-echo "Local config files removed."
+# 12f. Internet Gateway (Detach first)
+if [ -n "$IGW_ID" ] && [ -n "$VPC_ID" ]; then
+    # Check if attached before detaching
+     if aws ec2 describe-internet-gateways --internet-gateway-ids $IGW_ID --filters Name=attachment.vpc-id,Values=$VPC_ID --query 'InternetGateways[0]' --output text --region $AWS_REGION 2>/dev/null | grep -q .; then
+        echo "Detaching Internet Gateway $IGW_ID from VPC $VPC_ID..."
+        aws ec2 detach-internet-gateway --internet-gateway-id $IGW_ID --vpc-id $VPC_ID --region $AWS_REGION || echo "WARN: Failed to detach IGW."
+        sleep 5 
+     else
+        echo "Internet Gateway $IGW_ID already detached or not found."
+     fi
+    delete_resource "Internet Gateway" $IGW_ID \
+        "aws ec2 delete-internet-gateway --internet-gateway-id $IGW_ID --region $AWS_REGION" \
+        "aws ec2 describe-internet-gateways --internet-gateway-ids $IGW_ID --region $AWS_REGION" \
+        'InternetGateways[0]'
+else
+    echo "Skipping IGW detachment/deletion: IGW ID or VPC ID missing."
+fi
+
+# 12g. VPC Endpoints (Must be deleted before VPC)
+echo "Deleting VPC Endpoints..."
+VPC_ENDPOINTS=$(aws ec2 describe-vpc-endpoints --filters Name=vpc-id,Values=$VPC_ID --query "VpcEndpoints[?RequesterManaged==\`false\`].VpcEndpointId" --output text --region $AWS_REGION 2>/dev/null)
+if [ -n "$VPC_ENDPOINTS" ]; then
+    aws ec2 delete-vpc-endpoints --vpc-endpoint-ids $VPC_ENDPOINTS --region $AWS_REGION || echo "WARN: Failed to delete some VPC endpoints."
+    echo "Waiting after VPC Endpoint deletion attempt..."
+    sleep 30 
+else
+    echo "No VPC Endpoints found for VPC $VPC_ID."
+fi
 
 
-echo "Cleanup script finished." 
+# 12h. VPC
+# Note: This will fail if *any* dependent resources remain (SGs, Endpoints, Subnets, RTs, IGW etc.)
+if [ -n "$VPC_ID" ]; then
+    delete_resource "VPC" $VPC_ID \
+        "aws ec2 delete-vpc --vpc-id $VPC_ID --region $AWS_REGION" \
+        "aws ec2 describe-vpcs --vpc-ids $VPC_ID --region $AWS_REGION" \
+        'Vpcs[0]'
+fi
+
+# 13. Optional: Delete SSM Parameters
+# echo "\n--- Step 13: SSM Parameters (Optional) ---"
+# READ_PARAMS=false # Set to true to enable parameter deletion prompt
+# if [ "$READ_PARAMS" = true ] && [ -n "$SECRET_PARAMETER_PATH_PREFIX" ]; then
+#     read -p "Delete SSM parameters with prefix '${SECRET_PARAMETER_PATH_PREFIX}'? (yes/no): " DEL_PARAMS
+#     if [ "$DEL_PARAMS" == "yes" ]; then
+#         echo "Finding SSM parameters with prefix $SECRET_PARAMETER_PATH_PREFIX ..."
+#         PARAM_NAMES=$(aws ssm get-parameters-by-path --path "$SECRET_PARAMETER_PATH_PREFIX" --recursive --query "Parameters[*].Name" --output text --region $AWS_REGION)
+#         if [ -n "$PARAM_NAMES" ]; then
+#              # AWS CLI delete-parameters takes space-separated names
+#              PARAM_NAMES_SPACE_SEP=$(echo $PARAM_NAMES) 
+#              echo "Deleting parameters: $PARAM_NAMES_SPACE_SEP"
+#              aws ssm delete-parameters --names $PARAM_NAMES_SPACE_SEP --region $AWS_REGION || echo "WARN: Failed to delete some or all SSM parameters."
+#              echo "SSM Parameter deletion initiated."
+#         else
+#              echo "No parameters found with prefix $SECRET_PARAMETER_PATH_PREFIX."
+#         fi
+#     else 
+#         echo "Skipping SSM parameter deletion."
+#     fi
+# elif [ "$READ_PARAMS" = true ]; then
+#      echo "Skipping SSM parameter deletion: Prefix not found in config."
+# fi
+
+# 14. Cleanup local config files
+echo "\n--- Step 14: Local Config Files ---"
+CONFIG_FILES_TO_DELETE=("vpc-config.sh" "rds-config.sh" "ecr-config.sh" "certificate-config.sh" "alb-config.sh" "nat-gateway-config.sh" "secrets-config.sh" "bastion-config.sh" "ecs-config.sh") 
+read -p "Delete local configuration files in '$SCRIPT_DIR'? (yes/no): " DEL_CONFIG
+if [ "$DEL_CONFIG" == "yes" ]; then
+    for cfg_file in "${CONFIG_FILES_TO_DELETE[@]}"; do
+        if [ -f "$SCRIPT_DIR/$cfg_file" ]; then
+            echo "Deleting $SCRIPT_DIR/$cfg_file ..."
+            rm "$SCRIPT_DIR/$cfg_file"
+        fi
+    done
+    # Delete temp files too
+    rm -f "$SCRIPT_DIR/"*.tmp
+    rm -f "$SCRIPT_DIR/"*.json # Remove any leftover json files
+    echo "Local config files deleted."
+else
+    echo "Skipping deletion of local config files."
+fi
+
+# 21. Delete Config Files
+echo "\n--- Step 21: Delete Config Files ---"
+echo "Deleting config files from $CONFIG_DIR..."
+for cfg in "${config_files[@]}"; do
+    if [ -f "$CONFIG_DIR/$cfg" ]; then
+        rm -v "$CONFIG_DIR/$cfg"
+    fi
+done
+echo "Local config files deleted."
+
+echo "Cleanup Script Finished."
