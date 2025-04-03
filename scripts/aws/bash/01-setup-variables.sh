@@ -54,10 +54,23 @@ export ECS_SERVICE_COUNT=1
 export ALB_NAME="${APP_NAME}-alb"
 export ALB_TG_NAME="${APP_NAME}-tg"
 
-# SSL Configuration
-export SSL_CERTIFICATE_ARN=""
-# HOSTED_ZONE_ID is now handled by 02b-create-hosted-zone.sh
-# export HOSTED_ZONE_ID="" # Define as empty, script 08 will populate or fail
+# SSL Configuration - Your existing certificate ARN
+export SSL_CERTIFICATE_ARN="arn:aws:acm:eu-west-1:765194364851:certificate/acb20d41-9500-4aa3-a1ce-bf799f909eb7"
+
+# Source config files if they exist
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+CONFIG_DIR="$SCRIPT_DIR/config"
+mkdir -p "$CONFIG_DIR"
+
+# Source hosted zone ID if available
+if [ -f "$CONFIG_DIR/route53-config.sh" ]; then
+    source "$CONFIG_DIR/route53-config.sh"
+fi
+
+# Source certificate ARN if available (will override default if script has been run before)
+if [ -f "$CONFIG_DIR/certificate-config.sh" ]; then
+    source "$CONFIG_DIR/certificate-config.sh"
+fi
 
 # Export all variables
 set -a 

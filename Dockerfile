@@ -51,6 +51,8 @@ COPY --from=builder --chown=nextjs:nodejs /app/node_modules ./node_modules
 COPY --from=builder --chown=nextjs:nodejs /app/package.json ./package.json
 
 # Set correct permissions
+# Install psql client *before* switching user
+# RUN apk add --no-cache postgresql15-client # Keep commented out unless needed for future debugging
 USER nextjs
 
 # Expose the port the app runs on
@@ -59,5 +61,5 @@ EXPOSE 3000
 # Add health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 CMD wget -qO- http://localhost:3000/api/health || exit 1
 
-# Start the application using next start if not using standalone
-CMD ["npm", "run", "start"] 
+# Run database migrations and then start the application
+CMD ["sh", "-c", "npx prisma migrate deploy && npm run start"] 

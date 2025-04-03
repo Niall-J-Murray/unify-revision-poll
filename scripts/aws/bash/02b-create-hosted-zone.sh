@@ -16,26 +16,37 @@ if [ -z "$APP_NAME" ]; then echo "Error: APP_NAME is not set."; exit 1; fi
 
 # Check if HOSTED_ZONE_ID is already set (e.g., manually in 01-setup or env var)
 if [ -n "$HOSTED_ZONE_ID" ]; then
-    echo "INFO: HOSTED_ZONE_ID is already set to '$HOSTED_ZONE_ID'. Skipping check/creation."
-    # Optional: Verify it actually exists in AWS?
+    echo "INFO: HOSTED_ZONE_ID is already set to '$HOSTED_ZONE_ID'. Verifying it actually exists..."
     aws route53 get-hosted-zone --id $HOSTED_ZONE_ID --region $AWS_REGION > /dev/null 2>&1
     if [ $? -ne 0 ]; then
         echo "Warning: Pre-set HOSTED_ZONE_ID '$HOSTED_ZONE_ID' not found or not accessible."
-        # Continue anyway, subsequent steps will likely fail if ID is wrong.
+        echo "Will search for another valid hosted zone instead."
+        HOSTED_ZONE_ID=""
+    else
+        echo "Verified: Hosted zone $HOSTED_ZONE_ID exists and is accessible."
+        exit 0
     fi
-    exit 0
 fi
 
-echo "Attempting to find existing Hosted Zone for $DOMAIN_NAME..."
-HZ_INFO=$(aws route53 list-hosted-zones-by-name --dns-name "$DOMAIN_NAME." --max-items 1 --query "HostedZones[?Name==\"$DOMAIN_NAME.\"]" --output json --region $AWS_REGION 2>/dev/null)
+echo "Searching for existing Hosted Zone for $DOMAIN_NAME..."
+# Get ALL hosted zones and filter for our domain
+ALL_HOSTED_ZONES=$(aws route53 list-hosted-zones --output json --region $AWS_REGION 2>/dev/null)
+if [ $? -ne 0 ]; then 
+    echo "Error retrieving hosted zones. Check AWS CLI configuration and permissions."
+    exit 1
+fi
 
-if [ -n "$HZ_INFO" ] && [ "$HZ_INFO" != "[]" ]; then
-    # Hosted Zone Found
-    echo "Found existing Hosted Zone for $DOMAIN_NAME."
-    HOSTED_ZONE_ID=$(echo "$HZ_INFO" | jq -r '.[0].Id' | sed 's|/hostedzone/||')
-    echo "Exporting HOSTED_ZONE_ID=$HOSTED_ZONE_ID"
-    export HOSTED_ZONE_ID # Export for subsequent scripts in this session
+# Use a more robust approach to find ALL matching hosted zones
+MATCHING_ZONES=$(echo "$ALL_HOSTED_ZONES" | jq -r --arg domain "$DOMAIN_NAME." '.HostedZones[] | select(.Name == $domain) | .Id')
 
+if [ -n "$MATCHING_ZONES" ]; then
+    ZONE_COUNT=$(echo "$MATCHING_ZONES" | wc -l)
+    echo "Found $ZONE_COUNT hosted zone(s) matching $DOMAIN_NAME"
+    
+    # Use the first zone found
+    HOSTED_ZONE_ID=$(echo "$MATCHING_ZONES" | head -n 1 | sed 's|/hostedzone/||')
+    echo "Using hosted zone: $HOSTED_ZONE_ID"
+    
     # Get Nameservers for existing zone
     NAMESERVERS=$(aws route53 get-hosted-zone --id $HOSTED_ZONE_ID --query 'DelegationSet.NameServers' --output json --region $AWS_REGION)
     echo "------------------------------------------------------------------"
@@ -43,9 +54,20 @@ if [ -n "$HZ_INFO" ] && [ "$HZ_INFO" != "[]" ]; then
     echo "Ensure your domain registrar for '$DOMAIN_NAME' is using these AWS nameservers:"
     echo $NAMESERVERS | jq -r '.[]'
     echo "------------------------------------------------------------------"
+    
+    # Export HOSTED_ZONE_ID
+    export HOSTED_ZONE_ID
+    
+    # Write to config file for other scripts to use
+    ZONE_CONFIG_FILE="$CONFIG_DIR/route53-config.sh"
+    echo "#!/bin/bash" > "$ZONE_CONFIG_FILE"
+    echo "# Route 53 Hosted Zone Configuration" >> "$ZONE_CONFIG_FILE"
+    echo "export HOSTED_ZONE_ID=\"$HOSTED_ZONE_ID\"" >> "$ZONE_CONFIG_FILE"
+    chmod +x "$ZONE_CONFIG_FILE"
+    echo "Hosted zone ID saved to $ZONE_CONFIG_FILE"
 else
     # Hosted Zone Not Found - Create it
-    echo "Hosted Zone for $DOMAIN_NAME not found. Creating..."
+    echo "No hosted zone for $DOMAIN_NAME found. Creating..."
     # Unique reference for idempotency
     CALLER_REF="$APP_NAME-$DOMAIN_NAME-create-$(date +%s)" # Add timestamp for potential retries
     
@@ -58,14 +80,24 @@ else
         if echo "$CREATE_HZ_OUTPUT" | grep -q 'HostedZoneAlreadyExists'; then
             echo "INFO: HostedZoneAlreadyExists error received. Zone likely exists but wasn't found initially."
             echo "Attempting to retrieve existing zone details again..."
-            # Retry the list operation, assuming it might work now or permissions allow get
-            HZ_INFO_RETRY=$(aws route53 list-hosted-zones-by-name --dns-name "$DOMAIN_NAME." --max-items 1 --query "HostedZones[?Name==\"$DOMAIN_NAME.\"]" --output json --region $AWS_REGION 2>/dev/null)
-            if [ -n "$HZ_INFO_RETRY" ] && [ "$HZ_INFO_RETRY" != "[]" ]; then
-                echo "Successfully retrieved existing Hosted Zone details on retry."
-                HOSTED_ZONE_ID=$(echo "$HZ_INFO_RETRY" | jq -r '.[0].Id' | sed 's|/hostedzone/||')
+            # Retry the list operation
+            ALL_HOSTED_ZONES=$(aws route53 list-hosted-zones --output json --region $AWS_REGION 2>/dev/null)
+            MATCHING_ZONES=$(echo "$ALL_HOSTED_ZONES" | jq -r --arg domain "$DOMAIN_NAME." '.HostedZones[] | select(.Name == $domain) | .Id')
+            
+            if [ -n "$MATCHING_ZONES" ]; then
+                HOSTED_ZONE_ID=$(echo "$MATCHING_ZONES" | head -n 1 | sed 's|/hostedzone/||')
                 NAMESERVERS=$(aws route53 get-hosted-zone --id $HOSTED_ZONE_ID --query 'DelegationSet.NameServers' --output json --region $AWS_REGION)
                 echo "Exporting HOSTED_ZONE_ID=$HOSTED_ZONE_ID"
-                export HOSTED_ZONE_ID # Export for subsequent scripts in this session
+                export HOSTED_ZONE_ID
+                
+                # Write to config file
+                ZONE_CONFIG_FILE="$CONFIG_DIR/route53-config.sh"
+                echo "#!/bin/bash" > "$ZONE_CONFIG_FILE"
+                echo "# Route 53 Hosted Zone Configuration" >> "$ZONE_CONFIG_FILE"
+                echo "export HOSTED_ZONE_ID=\"$HOSTED_ZONE_ID\"" >> "$ZONE_CONFIG_FILE"
+                chmod +x "$ZONE_CONFIG_FILE"
+                echo "Hosted zone ID saved to $ZONE_CONFIG_FILE"
+                
                 echo "------------------------------------------------------------------"
                 echo "INFO: Using Existing Hosted Zone: $HOSTED_ZONE_ID"
                 echo "Ensure your domain registrar for '$DOMAIN_NAME' is using these AWS nameservers:"
@@ -89,7 +121,15 @@ else
         
         echo "Successfully created Hosted Zone: $HOSTED_ZONE_ID"
         echo "Exporting HOSTED_ZONE_ID=$HOSTED_ZONE_ID"
-        export HOSTED_ZONE_ID # Export for subsequent scripts in this session
+        export HOSTED_ZONE_ID
+        
+        # Write to config file
+        ZONE_CONFIG_FILE="$CONFIG_DIR/route53-config.sh"
+        echo "#!/bin/bash" > "$ZONE_CONFIG_FILE"
+        echo "# Route 53 Hosted Zone Configuration" >> "$ZONE_CONFIG_FILE"
+        echo "export HOSTED_ZONE_ID=\"$HOSTED_ZONE_ID\"" >> "$ZONE_CONFIG_FILE"
+        chmod +x "$ZONE_CONFIG_FILE"
+        echo "Hosted zone ID saved to $ZONE_CONFIG_FILE"
         
         echo "========================= IMPORTANT MANUAL STEP ========================"
         echo "You MUST update the nameservers for your domain '$DOMAIN_NAME' at your domain registrar."
@@ -101,9 +141,9 @@ else
         echo "(like ACM certificate validation) will fail if nameservers are not updated"
         echo "and propagated."
         echo "========================================================================"
-        # Add a pause? Or just warn? Warning is better for potential automation.
-        echo "Warning: Pausing for 30 seconds to allow reading nameserver instructions..."
-        sleep 30
+        # Replace sleep with skippable read
+        read -t 30 -p "Pausing for 30 seconds to allow reading nameserver instructions. Press Enter to skip..."
+        echo "" # Add a newline after the read prompt
     fi
 fi
 

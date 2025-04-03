@@ -312,76 +312,153 @@ fi
 # Remove temporary file if it exists from previous versions
 rm -f "$SCRIPT_DIR/assume-role-policy.json"
 
-# Check/Create SSM Parameter Access Policy
+# --- Check/Create/Update IAM Policy for SSM Parameter Access + Logs ---
 SSM_POLICY_NAME="${APP_NAME}-ssm-parameter-access-policy"
-echo "Checking/Creating IAM policy for SSM access: $SSM_POLICY_NAME..."
+# Get AWS Account ID for policy resources
+AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text --region $AWS_REGION)
+if [ -z "$AWS_ACCOUNT_ID" ]; then echo "Error: Could not determine AWS Account ID."; exit 1; fi
 
-# Use hyphenated name prefix for policy resource
-ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-SSM_PARAMETER_ARN_PATTERN="arn:aws:ssm:${AWS_REGION}:${ACCOUNT_ID}:parameter/${APP_NAME}-*"
-
-# Check if policy exists
-SSM_POLICY_ARN=$(aws iam list-policies --scope Local --query "Policies[?PolicyName=='$SSM_POLICY_NAME'].Arn" --output text --region $AWS_REGION 2>/dev/null)
-
-if [ -z "$SSM_POLICY_ARN" ] || [ "$SSM_POLICY_ARN" == "None" ]; then
-  echo "SSM policy not found. Creating..."
-  POLICY_DOCUMENT=$(cat <<-EOF
+# Construct policy document
+SSM_POLICY_JSON=$(cat <<EOF
 {
-    "Version": "2012-10-17",
-    "Statement": [
-        {
-            "Effect": "Allow",
-            "Action": "ssm:GetParameters",
-            "Resource": "$SSM_PARAMETER_ARN_PATTERN"
-        }
-    ]
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ssm:GetParameters",
+        "secretsmanager:GetSecretValue",
+        "kms:Decrypt"
+      ],
+      "Resource": [
+        "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/${SECRET_PARAMETER_NAME_PREFIX}-*",
+        "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${SECRET_PARAMETER_NAME_PREFIX}-*",
+        "arn:aws:kms:${AWS_REGION}:${AWS_ACCOUNT_ID}:key/*" 
+      ]
+    },
+    {
+        "Effect": "Allow",
+        "Action": [
+            "logs:CreateLogGroup"
+        ],
+        "Resource": "arn:aws:logs:${AWS_REGION}:${AWS_ACCOUNT_ID}:log-group:/ecs/${APP_NAME}:*"
+    }
+  ]
 }
 EOF
 )
-  SSM_POLICY_ARN=$(aws iam create-policy \
-    --policy-name $SSM_POLICY_NAME \
-    --policy-document "$POLICY_DOCUMENT" \
-    --description "Policy granting access to ${APP_NAME} SSM parameters named ${APP_NAME}-*" \
-    --query 'Policy.Arn' \
-    --output text \
-    --region $AWS_REGION)
-  if [ $? -ne 0 ] || [ -z "$SSM_POLICY_ARN" ]; then echo "Error: Failed to create SSM policy"; exit 1; fi
-  echo "Created SSM policy: $SSM_POLICY_ARN"
+
+# Check if policy exists
+SSM_POLICY_ARN=$(aws iam list-policies --scope Local --query "Policies[?PolicyName=='$SSM_POLICY_NAME'].Arn" --output text --region $AWS_REGION)
+
+if [ -z "$SSM_POLICY_ARN" ] || [ "$SSM_POLICY_ARN" == "None" ]; then
+    echo "SSM policy not found. Creating..."
+    SSM_POLICY_ARN=$(aws iam create-policy \
+      --policy-name $SSM_POLICY_NAME \
+      --policy-document "$SSM_POLICY_JSON" \
+      --description "Policy granting access to ${APP_NAME} SSM parameters and allowing Log Group creation" \
+      --query 'Policy.Arn' \
+      --output text \
+      --region $AWS_REGION)
+    if [ $? -ne 0 ] || [ -z "$SSM_POLICY_ARN" ]; then echo "Failed to create SSM policy"; exit 1; fi
+    echo "Created SSM policy: $SSM_POLICY_ARN"
+elif [ -n "$SSM_POLICY_ARN" ]; then
+    echo "SSM policy found: $SSM_POLICY_ARN. Checking if update is needed..."
+    # Get current default policy version content directly as JSON
+    CURRENT_VERSION_ID=$(aws iam get-policy --policy-arn $SSM_POLICY_ARN --query 'Policy.DefaultVersionId' --output text --region $AWS_REGION)
+    # Fetch the raw JSON document, don't rely on --output text decoding
+    CURRENT_POLICY_RAW_JSON=$(aws iam get-policy-version --policy-arn $SSM_POLICY_ARN --version-id $CURRENT_VERSION_ID --query 'PolicyVersion.Document' --output json --region $AWS_REGION)
+    if [ $? -ne 0 ] || [ -z "$CURRENT_POLICY_RAW_JSON" ]; then
+        echo "Error: Failed to retrieve current policy document JSON."
+        exit 1
+    fi
+
+    # Use jq to compare the current document with the desired one
+    # Create temporary files for jq diff
+    CURRENT_POLICY_FILE=$(mktemp)
+    DESIRED_POLICY_FILE=$(mktemp)
+    echo "$CURRENT_POLICY_RAW_JSON" > "$CURRENT_POLICY_FILE"
+    echo "$SSM_POLICY_JSON" > "$DESIRED_POLICY_FILE"
+    
+    # Perform the diff using jq
+    POLICY_DIFF=$(jq -n --argfile current "$CURRENT_POLICY_FILE" --argfile desired "$DESIRED_POLICY_FILE" 'diff($current; $desired) | length > 0')
+    # Clean up temp files
+    rm -f "$CURRENT_POLICY_FILE" "$DESIRED_POLICY_FILE"
+
+    if [ "$POLICY_DIFF" == "false" ]; then
+        echo "Policy content is already up-to-date."
+    else
+        echo "Policy content differs (jq diff detected changes). Creating new policy version..."
+        # Prune old versions if necessary (max 5 versions allowed)
+        VERSION_COUNT=$(aws iam list-policy-versions --policy-arn $SSM_POLICY_ARN --query "length(Versions[?IsDefaultVersion==\`false\`])" --region $AWS_REGION)
+        if [ $VERSION_COUNT -ge 4 ]; then
+            echo "Pruning oldest non-default policy version..."
+            OLDEST_VERSION_ID=$(aws iam list-policy-versions --policy-arn $SSM_POLICY_ARN --query "Versions[?IsDefaultVersion==\`false\`] | sort_by(@, &CreateDate) | [0].VersionId" --output text --region $AWS_REGION)
+            if [ -n "$OLDEST_VERSION_ID" ]; then
+                aws iam delete-policy-version --policy-arn $SSM_POLICY_ARN --version-id $OLDEST_VERSION_ID --region $AWS_REGION
+            fi
+        fi
+        
+        # Create the new version
+        NEW_VERSION_INFO=$(aws iam create-policy-version \
+          --policy-arn $SSM_POLICY_ARN \
+          --policy-document "$SSM_POLICY_JSON" \
+          --set-as-default \
+          --query 'PolicyVersion.{VersionId:VersionId, IsDefaultVersion:IsDefaultVersion}' \
+          --output json \
+          --region $AWS_REGION)
+        
+        if [ $? -ne 0 ]; then 
+            echo "Error: Failed to create new policy version."
+            # Attempt to describe the policy again in case of eventual consistency issues
+            sleep 5
+            aws iam get-policy --policy-arn $SSM_POLICY_ARN --region $AWS_REGION
+            exit 1
+        fi
+        NEW_VERSION_ID=$(echo "$NEW_VERSION_INFO" | jq -r '.VersionId')
+        IS_DEFAULT=$(echo "$NEW_VERSION_INFO" | jq -r '.IsDefaultVersion')
+        echo "Created new policy version $NEW_VERSION_ID. Is default: $IS_DEFAULT"
+        if [ "$IS_DEFAULT" != "true" ]; then
+            echo "Warning: Failed to set new version as default immediately. Manual check might be needed."
+        fi
+    fi
 else
-  echo "SSM policy already exists: $SSM_POLICY_ARN"
+    echo "Error: Could not determine if SSM policy exists or failed to retrieve ARN."
+    exit 1
 fi
 
-# Attach SSM Policy to Execution Role
-echo "Checking/Attaching SSM policy ($SSM_POLICY_ARN) to role ($ECS_EXECUTION_ROLE_NAME)..."
-POLICY_ATTACHED=$(aws iam list-attached-role-policies --role-name $ECS_EXECUTION_ROLE_NAME --query "AttachedPolicies[?PolicyArn=='$SSM_POLICY_ARN'].PolicyArn" --output text --region $AWS_REGION 2>/dev/null)
-
-if [ -z "$POLICY_ATTACHED" ] || [ "$POLICY_ATTACHED" == "None" ]; then
-  echo "Attaching SSM policy to execution role..."
-  aws iam attach-role-policy \
-    --role-name $ECS_EXECUTION_ROLE_NAME \
-    --policy-arn $SSM_POLICY_ARN \
-    --region $AWS_REGION
-  if [ $? -ne 0 ]; then echo "Error: Failed to attach SSM policy to execution role"; exit 1; fi
-  echo "Successfully attached SSM policy to execution role"
+# --- Attach Policy to Role (if not already attached) ---
+# Get the role name from the ARN
+ECS_EXECUTION_ROLE_NAME=$(basename $ECS_EXECUTION_ROLE_ARN)
+echo "Checking if policy $SSM_POLICY_ARN is attached to role $ECS_EXECUTION_ROLE_NAME..."
+ATTACHED=$(aws iam list-attached-role-policies --role-name $ECS_EXECUTION_ROLE_NAME --query "AttachedPolicies[?PolicyArn=='$SSM_POLICY_ARN']" --output text --region $AWS_REGION)
+if [ -z "$ATTACHED" ]; then
+    echo "Attaching policy to role..."
+    aws iam attach-role-policy --role-name $ECS_EXECUTION_ROLE_NAME --policy-arn $SSM_POLICY_ARN --region $AWS_REGION
+    if [ $? -ne 0 ]; then echo "Failed to attach SSM policy to execution role"; exit 1; fi
 else
-  echo "SSM policy is already attached to the execution role"
+    echo "Policy is already attached to the role."
 fi
 
-# Save/Update SSM Policy ARN in secrets-config.sh
-echo "Updating secrets-config.sh with SSM Policy ARN..."
+# Save/Update the policy ARN in secrets config
+# This part seems okay, it just saves the ARN
 SECRETS_CONFIG_FILE="$CONFIG_DIR/secrets-config.sh"
-TEMP_SECRETS_CONFIG="$CONFIG_DIR/secrets-config.sh.tmp"
-# Create or overwrite temp file
-echo "#!/bin/bash" > "$TEMP_SECRETS_CONFIG"
-# Preserve existing Secret Parameter Name Prefix
-if [ -f "$SECRETS_CONFIG_FILE" ] && grep -q "export SECRET_PARAMETER_NAME_PREFIX=" "$SECRETS_CONFIG_FILE"; then
-    grep "export SECRET_PARAMETER_NAME_PREFIX=" "$SECRETS_CONFIG_FILE" >> "$TEMP_SECRETS_CONFIG"
-elif [ -n "$PARAM_NAME_PREFIX" ]; then # Fallback if grep failed but var exists
-    echo "export SECRET_PARAMETER_NAME_PREFIX=\\"$PARAM_NAME_PREFIX\\"" >> "$TEMP_SECRETS_CONFIG"
+TEMP_SECRETS_CONFIG="$SECRETS_CONFIG_FILE.tmp"
+if [ -f "$SECRETS_CONFIG_FILE" ]; then
+    # Create temp file excluding old ARN line if it exists
+    grep -v "^export SSM_POLICY_ARN=" "$SECRETS_CONFIG_FILE" > "$TEMP_SECRETS_CONFIG"
+else
+    # Create temp file with shebang if original doesn't exist
+    echo "#!/bin/bash" > "$TEMP_SECRETS_CONFIG"
+    echo "# Secrets Configuration" >> "$TEMP_SECRETS_CONFIG"
+    # Add SECRET_PARAMETER_NAME_PREFIX if it's not defined yet but needed
+    if ! grep -q "^export SECRET_PARAMETER_NAME_PREFIX=" "$TEMP_SECRETS_CONFIG"; then
+         echo "export SECRET_PARAMETER_NAME_PREFIX=\"$PARAM_NAME_PREFIX\"" >> "$TEMP_SECRETS_CONFIG"
+    fi
 fi
 # Add/Update SSM Policy ARN
 echo "# SSM Policy ARN" >> "$TEMP_SECRETS_CONFIG"
-echo "export SSM_POLICY_ARN=\\"$SSM_POLICY_ARN\\"" >> "$TEMP_SECRETS_CONFIG"
+echo "export SSM_POLICY_ARN=\"$SSM_POLICY_ARN\"" >> "$TEMP_SECRETS_CONFIG"
 # Make executable and replace original
 chmod +x "$TEMP_SECRETS_CONFIG"
 mv "$TEMP_SECRETS_CONFIG" "$SECRETS_CONFIG_FILE"
@@ -391,19 +468,37 @@ echo "SSM_POLICY_ARN updated in $SECRETS_CONFIG_FILE"
 # Source configs again to ensure necessary variables are loaded (like LATEST_PUSHED_TAG)
 [ -f "$CONFIG_DIR/secrets-config.sh" ] && source "$CONFIG_DIR/secrets-config.sh"
 [ -f "$CONFIG_DIR/ecr-config.sh" ] && source "$CONFIG_DIR/ecr-config.sh" # Source ECR config
-if [ -z "$SECRET_PARAMETER_NAME_PREFIX" ]; then echo "Error: SECRET_PARAMETER_NAME_PREFIX not found in $CONFIG_DIR/secrets-config.sh."; exit 1; fi
-if [ -z "$REPOSITORY_URI" ]; then echo "Error: REPOSITORY_URI not found in $CONFIG_DIR/ecr-config.sh."; exit 1; fi
-if [ -z "$LATEST_PUSHED_TAG" ]; then echo "Error: LATEST_PUSHED_TAG not found in $CONFIG_DIR/ecr-config.sh. Run 06-build-push-docker.sh first."; exit 1; fi
 
-# --- FIX: Explicitly get AWS Account ID before creating Task Definition JSON --- 
+# --- Add explicit variable checks before creating JSON ---
+echo "Validating variables for Task Definition..."
+REQUIRED_VARS=(
+    "APP_NAME" "ECS_EXECUTION_ROLE_ARN" "ECS_TASK_CPU" "ECS_TASK_MEMORY" 
+    "ECS_CONTAINER_NAME" "REPOSITORY_URI" "LATEST_PUSHED_TAG" "ECS_CONTAINER_PORT" 
+    "AWS_REGION" "SECRET_PARAMETER_NAME_PREFIX"
+)
+
+MISSING_VARS=false
+for VAR_NAME in "${REQUIRED_VARS[@]}"; do
+    if [ -z "${!VAR_NAME}" ]; then
+        echo "Error: Required variable $VAR_NAME is not set."
+        MISSING_VARS=true
+    fi
+done
+
+# Also need AWS Account ID
 echo "Retrieving AWS Account ID..."
 AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text --region $AWS_REGION)
 if [ -z "$AWS_ACCOUNT_ID" ]; then 
     echo "Error: Could not determine AWS Account ID using sts get-caller-identity."
+    MISSING_VARS=true
+fi
+
+if [ "$MISSING_VARS" = true ]; then
+    echo "One or more required variables are missing. Cannot create task definition."
     exit 1
 fi
-echo "Using Account ID: $AWS_ACCOUNT_ID"
-# --- END FIX ---
+echo "All required variables validated. Using Account ID: $AWS_ACCOUNT_ID"
+# --- End variable checks ---
 
 # Create task definition JSON content as a variable
 echo "Preparing Task Definition JSON content using image tag: $LATEST_PUSHED_TAG..."
@@ -412,11 +507,6 @@ TASK_DEFINITION_JSON=$(cat <<EOF
   "family": "${APP_NAME}-task",
   "networkMode": "awsvpc",
   "executionRoleArn": "${ECS_EXECUTION_ROLE_ARN}",
-  # taskRoleArn defines permissions for the application code itself.
-  # Using the execution role ARN here grants the application the same permissions 
-  # needed for setup (ECR pull, CW Logs, SSM GetParameters).
-  # If your application needs specific AWS permissions (e.g., S3 access), 
-  # create a separate IAM role with *only* those permissions and specify its ARN here.
   "taskRoleArn": "${ECS_EXECUTION_ROLE_ARN}",
   "requiresCompatibilities": ["FARGATE"],
   "cpu": "${ECS_TASK_CPU}",
@@ -451,8 +541,19 @@ TASK_DEFINITION_JSON=$(cat <<EOF
 }
 EOF
 )
-# Remove temporary file if it exists from previous versions
-rm -f "$SCRIPT_DIR/task-definition.json"
+
+# --- Add JSON validation ---
+echo "Validating generated JSON..."
+echo "$TASK_DEFINITION_JSON" | jq empty
+if [ $? -ne 0 ]; then
+    echo "Error: Generated Task Definition JSON is invalid. Please check script logic and variables."
+    echo "--- Invalid JSON --- >"
+    echo "$TASK_DEFINITION_JSON"
+    echo "< --- End Invalid JSON ---"
+    exit 1
+fi
+echo "JSON validated successfully."
+# --- End JSON validation ---
 
 # Register task definition, passing JSON as string
 echo "Registering Task Definition..."
@@ -533,11 +634,29 @@ echo "ALB configuration saved to $ALB_CONFIG_FILE"
 # --- NEW: Save Target Group ARN ---
 # We need this for the cleanup script
 echo "Updating $ALB_CONFIG_FILE with Target Group ARN..."
-if grep -q "export TARGET_GROUP_ARN=" "$ALB_CONFIG_FILE"; then
-    sed -i "s|^export TARGET_GROUP_ARN=.*$|export TARGET_GROUP_ARN=\\"$TARGET_GROUP_ARN\\"|" "$ALB_CONFIG_FILE"
+TEMP_ALB_CONFIG="$ALB_CONFIG_FILE.tmp"
+
+# Define the line to add/update
+NEW_LINE="export TARGET_GROUP_ARN=\"$TARGET_GROUP_ARN\""
+
+# Check if the line already exists
+if grep -q "^export TARGET_GROUP_ARN=" "$ALB_CONFIG_FILE"; then
+    echo "Updating existing TARGET_GROUP_ARN line..."
+    # Create a new file excluding the old line
+    grep -v "^export TARGET_GROUP_ARN=" "$ALB_CONFIG_FILE" > "$TEMP_ALB_CONFIG"
+    # Append the new line
+    echo "$NEW_LINE" >> "$TEMP_ALB_CONFIG"
+    # Replace the original file
+    mv "$TEMP_ALB_CONFIG" "$ALB_CONFIG_FILE"
 else
-    echo "export TARGET_GROUP_ARN=\\"$TARGET_GROUP_ARN\\"" >> "$ALB_CONFIG_FILE"
+    echo "Appending TARGET_GROUP_ARN line..."
+    # Append the new line if it didn't exist
+    echo "$NEW_LINE" >> "$ALB_CONFIG_FILE"
 fi
+
+# Ensure the temporary file is removed if it still exists (e.g., on error)
+rm -f "$TEMP_ALB_CONFIG"
+
 # --- End Save Target Group ARN ---
 
 echo "ECS resources creation completed" 

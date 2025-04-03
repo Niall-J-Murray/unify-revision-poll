@@ -186,6 +186,31 @@ else
     echo "Skipping ECS Service deletion: Cluster or Service name missing."
 fi
 
+# --- ADDITION: Delete ECS Cluster ---
+echo "\n--- Step 1b: ECS Cluster ---"
+if [ -n "$ECS_CLUSTER_NAME" ]; then
+    # Check if service deletion might still be in progress (wait a bit more)
+    sleep 15 
+    delete_resource "ECS Cluster" $ECS_CLUSTER_NAME \
+        "aws ecs delete-cluster --cluster $ECS_CLUSTER_NAME --region $AWS_REGION" \
+        "aws ecs describe-clusters --clusters $ECS_CLUSTER_NAME --region $AWS_REGION" \
+        'clusters[?status!=`INACTIVE`]' # Check if not already deleting/deleted
+else
+    echo "Skipping ECS Cluster deletion: Cluster name missing."
+fi
+
+# --- ADDITION: Delete CloudWatch Log Group ---
+echo "\n--- Step 1c: CloudWatch Log Group ---"
+LOG_GROUP_NAME="/ecs/${APP_NAME}" # Construct the expected log group name
+if [ -n "$LOG_GROUP_NAME" ]; then
+    delete_resource "CloudWatch Log Group" $LOG_GROUP_NAME \
+        "aws logs delete-log-group --log-group-name $LOG_GROUP_NAME --region $AWS_REGION" \
+        "aws logs describe-log-groups --log-group-name-prefix $LOG_GROUP_NAME --region $AWS_REGION" \
+        "logGroups[?logGroupName==\`$LOG_GROUP_NAME\`]" # Check specific name
+else
+    echo "Skipping CloudWatch Log Group deletion: Cannot determine name (APP_NAME missing?)."
+fi
+
 # 2. ECS Task Definitions (Deregister all revisions)
 echo "\n--- Step 2: ECS Task Definitions ---"
 if [ -n "$ECS_TASK_FAMILY" ]; then
@@ -245,8 +270,10 @@ fi
 echo "\n--- Step 5: Application Load Balancer ---"
 if [ -n "$ALB_ARN" ]; then
     delete_resource "ALB" $ALB_ARN "aws elbv2 delete-load-balancer --load-balancer-arn $ALB_ARN --region $AWS_REGION" "aws elbv2 describe-load-balancers --load-balancer-arns $ALB_ARN --region $AWS_REGION" 'LoadBalancers[0]'
-    echo "Waiting for ALB deletion (approx 1 min)..."
-    sleep 60
+    if [ $? -eq 0 ]; then # Only wait if delete command likely succeeded
+        echo "Waiting longer for ALB deletion and ENI cleanup (approx 90s)..."
+        sleep 90
+    fi
 fi
 
 # 6. ACM Certificate
@@ -276,7 +303,7 @@ if [ -n "$ROLE_NAME" ] && [ "$ROLE_NAME" != "None" ] ; then
         aws iam remove-role-from-instance-profile --instance-profile-name $INSTANCE_PROFILE_NAME --role-name $ROLE_NAME --region $AWS_REGION || echo "WARN: Failed to remove role from instance profile."
 
         echo "Waiting briefly for detachments..."
-        sleep 10
+        sleep 15 # Increase wait slightly
 
         # Delete Role - Check command included in helper now
         delete_resource "IAM Role" $ROLE_NAME "aws iam delete-role --role-name $ROLE_NAME --region $AWS_REGION" "aws iam get-role --role-name $ROLE_NAME --region $AWS_REGION"
@@ -291,6 +318,19 @@ if [ -n "$ROLE_NAME" ] && [ "$ROLE_NAME" != "None" ] ; then
     fi
     # Delete policies after detaching from role
     if [ -n "$SSM_POLICY_ARN" ] && [ "$SSM_POLICY_ARN" != "None" ]; then
+        # Delete non-default policy versions first
+        echo "Deleting non-default versions for policy $SSM_POLICY_ARN..."
+        NON_DEFAULT_VERSIONS=$(aws iam list-policy-versions --policy-arn $SSM_POLICY_ARN --query "Versions[?IsDefaultVersion==\`false\`].VersionId" --output text --region $AWS_REGION)
+        if [ -n "$NON_DEFAULT_VERSIONS" ]; then
+            for version_id in $NON_DEFAULT_VERSIONS; do
+                echo "  Deleting version $version_id..."
+                aws iam delete-policy-version --policy-arn $SSM_POLICY_ARN --version-id $version_id --region $AWS_REGION || echo "  WARN: Failed to delete version $version_id"
+            done
+        else
+            echo "  No non-default versions found."
+        fi
+        sleep 5 # Brief wait after version deletion
+        # Now delete the policy itself
         delete_resource "SSM IAM Policy" $SSM_POLICY_ARN "aws iam delete-policy --policy-arn $SSM_POLICY_ARN --region $AWS_REGION" "aws iam get-policy --policy-arn $SSM_POLICY_ARN --region $AWS_REGION"
     fi
     # Delete old custom policy if it exists
@@ -322,6 +362,8 @@ if [ -n "$DB_INSTANCE_IDENTIFIER" ]; then
         if [ $? -eq 0 ]; then
              echo "Waiting for RDS deletion (can take several minutes)..."
              aws rds wait db-instance-deleted --db-instance-identifier $DB_INSTANCE_IDENTIFIER --region $AWS_REGION || echo "WARN: Wait for RDS deletion failed or timed out."
+             echo "Waiting 90 seconds after RDS deletion confirmation for cleanup..."
+             sleep 90
         fi
     else
         echo "RDS Instance $DB_INSTANCE_IDENTIFIER not found."
@@ -349,6 +391,8 @@ if [ -n "$BASTION_INSTANCE_ID" ]; then
      if [ $? -eq 0 ]; then # Only wait if terminate succeeded
          echo "Waiting for Bastion instance termination..."
          aws ec2 wait instance-terminated --instance-ids $BASTION_INSTANCE_ID --region $AWS_REGION || echo "WARN: Wait for Bastion termination failed or timed out."
+         echo "Waiting 60 seconds after Bastion termination for cleanup..."
+         sleep 60
      fi
 fi
 
@@ -359,6 +403,32 @@ if [ -n "$ECR_REPOSITORY_NAME" ]; then
         "aws ecr delete-repository --repository-name $ECR_REPOSITORY_NAME --force --region $AWS_REGION" \
         "aws ecr describe-repositories --repository-names $ECR_REPOSITORY_NAME --region $AWS_REGION" \
         'repositories[0]'
+fi
+
+# --- ADDITION: Attempt to delete lingering ENIs --- 
+echo "\n--- Step 11b: Attempting to find and delete lingering Network Interfaces in VPC $VPC_ID ---"
+if [ -n "$VPC_ID" ]; then
+    # Find ENIs associated with the VPC, potentially filtering by status 'available' or description
+    # Filtering by description is often more reliable if resources were tagged well
+    echo "Searching for available ENIs in VPC $VPC_ID..."
+    LINGERING_ENIS=$(aws ec2 describe-network-interfaces --filters "Name=vpc-id,Values=$VPC_ID" "Name=status,Values=available" --query "NetworkInterfaces[*].NetworkInterfaceId" --output text --region $AWS_REGION)
+    # Alternative/Additional: Filter by description containing APP_NAME (adjust if needed)
+    # LINGERING_ENIS_BY_DESC=$(aws ec2 describe-network-interfaces --filters "Name=vpc-id,Values=$VPC_ID" "Name=description,Values=*${APP_NAME}*" "Name=status,Values=available" --query "NetworkInterfaces[*].NetworkInterfaceId" --output text --region $AWS_REGION)
+    # Combine results if needed
+
+    if [ -n "$LINGERING_ENIS" ]; then
+        echo "Found potentially lingering ENIs (status available): $LINGERING_ENIS"
+        for eni_id in $LINGERING_ENIS; do
+            echo "  Attempting to delete ENI: $eni_id..."
+            aws ec2 delete-network-interface --network-interface-id $eni_id --region $AWS_REGION || echo "  WARN: Failed to delete ENI $eni_id (might still be detaching or have dependencies). Possible reason: Security Group dependency."
+        done
+        echo "Waiting 60 seconds after attempting available ENI deletions..."
+        sleep 60
+    else
+        echo "No lingering ENIs found with status 'available'."
+    fi
+else
+    echo "Skipping ENI check: VPC ID missing."
 fi
 
 # --- Network Cleanup --- 
@@ -387,18 +457,20 @@ if [ -n "$VPC_DEFAULT_SG_ID_CHK" ] && [[ "$VPC_DEFAULT_SG_ID_CHK" != *None* ]]; 
         "aws ec2 describe-security-groups --group-ids $VPC_DEFAULT_SG_ID_CHK --region $AWS_REGION" \
         'SecurityGroups[0]'
 fi
-echo "Waiting briefly after SG deletion attempts..."
-sleep 15
+echo "Waiting 30 seconds after SG deletion attempts for ENI detachment..."
+sleep 30
 
 # 12b. NAT Gateway
 if [ -n "$NAT_GATEWAY_ID" ]; then
     NAT_GW_CHECK_CMD="aws ec2 describe-nat-gateways --nat-gateway-ids $NAT_GATEWAY_ID --region $AWS_REGION"
-    NAT_GW_CHECK_QUERY='NatGateways[?State!=`deleted`]'
+    NAT_GW_CHECK_QUERY='NatGateways[?State!=`deleted`]' # Check if not already deleted
     if $NAT_GW_CHECK_CMD --query "$NAT_GW_CHECK_QUERY" --output text 2>/dev/null | grep -q .; then
         delete_resource "NAT Gateway" $NAT_GATEWAY_ID "aws ec2 delete-nat-gateway --nat-gateway-id $NAT_GATEWAY_ID --region $AWS_REGION"
-        if [ $? -eq 0 ]; then # Only wait if delete command succeeded
+        if [ $? -eq 0 ]; then # Only wait if delete command likely succeeded
             echo "Waiting for NAT Gateway deletion..."
             aws ec2 wait nat-gateway-deleted --nat-gateway-ids $NAT_GATEWAY_ID --region $AWS_REGION || echo "WARN: Wait for NAT Gateway deletion failed or timed out."
+            echo "Waiting additional 60 seconds for NAT Gateway ENI cleanup..."
+            sleep 60
         fi
     else
         echo "NAT Gateway $NAT_GATEWAY_ID not found or already deleted."
@@ -413,6 +485,17 @@ if [ -n "$EIP_ALLOCATION_ID" ]; then
         'Addresses[0]'
 fi
 if [ -n "$BASTION_EIP_ALLOCATION_ID" ]; then
+    # Disassociate first
+    echo "Finding association ID for Bastion EIP $BASTION_EIP_ALLOCATION_ID..."
+    ASSOCIATION_ID=$(aws ec2 describe-addresses --allocation-ids $BASTION_EIP_ALLOCATION_ID --query "Addresses[0].AssociationId" --output text --region $AWS_REGION 2>/dev/null)
+    if [ -n "$ASSOCIATION_ID" ] && [ "$ASSOCIATION_ID" != "None" ]; then
+        echo "Disassociating Bastion EIP (Association ID: $ASSOCIATION_ID)..."
+        aws ec2 disassociate-address --association-id $ASSOCIATION_ID --region $AWS_REGION || echo "WARN: Failed to disassociate Bastion EIP."
+        sleep 10 # Wait after disassociation
+    else
+        echo "Bastion EIP not associated or association ID not found."
+    fi
+    # Now Release
     delete_resource "Bastion EIP" $BASTION_EIP_ALLOCATION_ID \
         "aws ec2 release-address --allocation-id $BASTION_EIP_ALLOCATION_ID --region $AWS_REGION" \
         "aws ec2 describe-addresses --allocation-ids $BASTION_EIP_ALLOCATION_ID --region $AWS_REGION" \
@@ -473,9 +556,28 @@ fi
 echo "Deleting VPC Endpoints..."
 VPC_ENDPOINTS=$(aws ec2 describe-vpc-endpoints --filters Name=vpc-id,Values=$VPC_ID --query "VpcEndpoints[?RequesterManaged==\`false\`].VpcEndpointId" --output text --region $AWS_REGION 2>/dev/null)
 if [ -n "$VPC_ENDPOINTS" ]; then
+    echo "Found VPC Endpoints: $VPC_ENDPOINTS"
     aws ec2 delete-vpc-endpoints --vpc-endpoint-ids $VPC_ENDPOINTS --region $AWS_REGION || echo "WARN: Failed to delete some VPC endpoints."
-    echo "Waiting after VPC Endpoint deletion attempt..."
-    sleep 30 
+    # Add a loop to wait for endpoints to be fully deleted
+    echo "Waiting up to 2 minutes for VPC Endpoints deletion..."
+    MAX_WAIT=120
+    INTERVAL=10
+    ELAPSED=0
+    while [ $ELAPSED -lt $MAX_WAIT ]; do
+        REMAINING_ENDPOINTS=$(aws ec2 describe-vpc-endpoints --vpc-endpoint-ids $VPC_ENDPOINTS --query "VpcEndpoints[?State!=\`deleted\`].VpcEndpointId" --output text --region $AWS_REGION 2>/dev/null)
+        if [ -z "$REMAINING_ENDPOINTS" ]; then
+            echo "All specified VPC Endpoints appear deleted."
+            break
+        fi
+        echo "Still waiting for endpoints: $REMAINING_ENDPOINTS... ($ELAPSED/$MAX_WAIT sec)"
+        sleep $INTERVAL
+        ELAPSED=$((ELAPSED + INTERVAL))
+    done
+    if [ $ELAPSED -ge $MAX_WAIT ]; then
+        echo "WARN: Timed out waiting for VPC Endpoints to delete. Remaining: $REMAINING_ENDPOINTS"
+    fi
+    echo "Waiting additional 90 seconds after VPC Endpoint deletion attempt for ENI cleanup..."
+    sleep 90 
 else
     echo "No VPC Endpoints found for VPC $VPC_ID."
 fi
@@ -515,14 +617,14 @@ fi
 # fi
 
 # 14. Cleanup local config files
-echo "\n--- Step 14: Local Config Files ---"
+echo "\n--- Final Step: Local Config Files ---"
 CONFIG_FILES_TO_DELETE=("vpc-config.sh" "rds-config.sh" "ecr-config.sh" "certificate-config.sh" "alb-config.sh" "nat-gateway-config.sh" "secrets-config.sh" "bastion-config.sh" "ecs-config.sh") 
-read -p "Delete local configuration files in '$SCRIPT_DIR'? (yes/no): " DEL_CONFIG
+read -p "Delete local configuration files in '$CONFIG_DIR'? (yes/no): " DEL_CONFIG
 if [ "$DEL_CONFIG" == "yes" ]; then
-    for cfg_file in "${CONFIG_FILES_TO_DELETE[@]}"; do
-        if [ -f "$SCRIPT_DIR/$cfg_file" ]; then
-            echo "Deleting $SCRIPT_DIR/$cfg_file ..."
-            rm "$SCRIPT_DIR/$cfg_file"
+    echo "Deleting config files from $CONFIG_DIR..."
+    for cfg in "${CONFIG_FILES_TO_DELETE[@]}"; do
+        if [ -f "$CONFIG_DIR/$cfg" ]; then
+            rm -v "$CONFIG_DIR/$cfg"
         fi
     done
     # Delete temp files too
@@ -532,15 +634,5 @@ if [ "$DEL_CONFIG" == "yes" ]; then
 else
     echo "Skipping deletion of local config files."
 fi
-
-# 21. Delete Config Files
-echo "\n--- Step 21: Delete Config Files ---"
-echo "Deleting config files from $CONFIG_DIR..."
-for cfg in "${config_files[@]}"; do
-    if [ -f "$CONFIG_DIR/$cfg" ]; then
-        rm -v "$CONFIG_DIR/$cfg"
-    fi
-done
-echo "Local config files deleted."
 
 echo "Cleanup Script Finished."

@@ -34,10 +34,42 @@ if [ -z "$AWS_REGION" ]; then echo "Error: AWS_REGION is not set."; exit 1; fi
 TARGET_RECORD_NAME="${SUBDOMAIN}.${DOMAIN_NAME}"
 echo "Checking/Creating Route 53 A record for ${TARGET_RECORD_NAME} pointing to ALB ${ALB_DNS_NAME}..."
 
+# First check if the record already exists
+echo "Checking for existing DNS record..."
+EXISTING_RECORD=$(aws route53 list-resource-record-sets \
+  --hosted-zone-id $HOSTED_ZONE_ID \
+  --query "ResourceRecordSets[?Name=='${TARGET_RECORD_NAME}.']" \
+  --output json \
+  --region $AWS_REGION)
+
+if [ -n "$EXISTING_RECORD" ] && [ "$EXISTING_RECORD" != "[]" ]; then
+    # Check if it's an alias record pointing to our ALB
+    IS_ALIAS=$(echo "$EXISTING_RECORD" | jq -r ".[0].AliasTarget != null")
+    if [ "$IS_ALIAS" == "true" ]; then
+        CURRENT_ALB_DNS=$(echo "$EXISTING_RECORD" | jq -r ".[0].AliasTarget.DNSName")
+        # Remove trailing dot if exists for comparison
+        CURRENT_ALB_DNS=${CURRENT_ALB_DNS%.}
+        ALB_DNS_NAME=${ALB_DNS_NAME%.}
+        
+        if [ "$CURRENT_ALB_DNS" == "$ALB_DNS_NAME" ]; then
+            echo "DNS record for ${TARGET_RECORD_NAME} already exists and points to the correct ALB. No changes needed."
+            exit 0
+        else
+            echo "DNS record exists but points to a different ALB. Will update to point to the current ALB."
+            # Continue to update the record
+        fi
+    else
+        echo "DNS record exists but is not an alias record. Will update to correct type."
+        # Continue to update the record
+    fi
+else
+    echo "No existing DNS record found. Will create a new one."
+fi
+
 # Construct the change batch for Route 53
 # Use jq to create JSON safely, handling potential special characters
 ROUTE53_CHANGE_JSON=$(jq -n --arg recordName "$TARGET_RECORD_NAME" --arg albDnsName "$ALB_DNS_NAME" --arg albHostedZoneId "$ALB_HOSTED_ZONE_ID" '{
-  "Comment": "Create A record alias for \($recordName) pointing to ALB",
+  "Comment": "Create/Update A record alias for \($recordName) pointing to ALB",
   "Changes": [
     {
       "Action": "UPSERT",

@@ -111,31 +111,86 @@ if [ -f "$NAT_GW_CONFIG_FILE" ]; then
     source "$NAT_GW_CONFIG_FILE" # Loads EIP_ALLOCATION_ID, NAT_GATEWAY_ID
 fi
 
+# First, check if we already have the EIP allocation ID from previous runs
 EIP_EXISTS=false
 if [ ! -z "$EIP_ALLOCATION_ID" ]; then
     EIP_ADDRESS=$(aws ec2 describe-addresses --allocation-ids $EIP_ALLOCATION_ID --query 'Addresses[0].PublicIp' --output text --region $AWS_REGION 2>/dev/null)
-    if [ $? -eq 0 ] && [ ! -z "$EIP_ADDRESS" ]; then
+    if [ $? -eq 0 ] && [ ! -z "$EIP_ADDRESS" ] && [ "$EIP_ADDRESS" != "None" ]; then
         echo "Found existing Elastic IP: $EIP_ADDRESS (Allocation ID: $EIP_ALLOCATION_ID)"
         EIP_EXISTS=true
     else
-        echo "Stored EIP Allocation ID $EIP_ALLOCATION_ID not found or invalid. Will allocate a new one."
+        echo "Stored EIP Allocation ID $EIP_ALLOCATION_ID not found or invalid. Will look for other existing EIPs."
         EIP_ALLOCATION_ID=""
     fi
 fi
 
+# If no valid EIP found by ID, search for any EIPs tagged with our app name
 if [ "$EIP_EXISTS" = false ]; then
-    echo "Allocating new Elastic IP..."
+    echo "Looking for existing Elastic IPs tagged with AppName=$APP_NAME..."
+    TAGGED_EIP=$(aws ec2 describe-addresses --filters "Name=tag:AppName,Values=$APP_NAME" --query 'Addresses[0].AllocationId' --output text --region $AWS_REGION)
+    
+    if [ -n "$TAGGED_EIP" ] && [ "$TAGGED_EIP" != "None" ]; then
+        echo "Found existing tagged Elastic IP with allocation ID: $TAGGED_EIP"
+        EIP_ALLOCATION_ID=$TAGGED_EIP
+        EIP_EXISTS=true
+        
+        # Save the found ID
+        echo "#!/bin/bash" > "$NAT_GW_CONFIG_FILE"
+        echo "# NAT Gateway Configuration" >> "$NAT_GW_CONFIG_FILE"
+        echo "export EIP_ALLOCATION_ID=\"$EIP_ALLOCATION_ID\"" >> "$NAT_GW_CONFIG_FILE"
+        # Add NAT_GATEWAY_ID placeholder if it existed before
+        if [ -n "$NAT_GATEWAY_ID" ]; then
+            echo "export NAT_GATEWAY_ID=\"$NAT_GATEWAY_ID\"" >> "$NAT_GW_CONFIG_FILE"
+        fi
+        chmod +x "$NAT_GW_CONFIG_FILE"
+        echo "Updated $NAT_GW_CONFIG_FILE with found EIP Allocation ID."
+    fi
+fi
+
+# If still no EIP found, check for any unassociated EIPs we could use
+if [ "$EIP_EXISTS" = false ]; then
+    echo "Looking for any unassociated Elastic IPs..."
+    UNASSOCIATED_EIP=$(aws ec2 describe-addresses --filters "Name=association-id,Values=" --query 'Addresses[0].AllocationId' --output text --region $AWS_REGION)
+    
+    if [ -n "$UNASSOCIATED_EIP" ] && [ "$UNASSOCIATED_EIP" != "None" ]; then
+        echo "Found unassociated Elastic IP with allocation ID: $UNASSOCIATED_EIP"
+        EIP_ALLOCATION_ID=$UNASSOCIATED_EIP
+        EIP_EXISTS=true
+        
+        # Tag this EIP for our app
+        aws ec2 create-tags --resources $EIP_ALLOCATION_ID --tags Key=AppName,Value="$APP_NAME" Key=Name,Value="${APP_NAME}-nat-eip" --region $AWS_REGION
+        
+        # Save the found ID
+        echo "#!/bin/bash" > "$NAT_GW_CONFIG_FILE"
+        echo "# NAT Gateway Configuration" >> "$NAT_GW_CONFIG_FILE"
+        echo "export EIP_ALLOCATION_ID=\"$EIP_ALLOCATION_ID\"" >> "$NAT_GW_CONFIG_FILE"
+        # Add NAT_GATEWAY_ID placeholder if it existed before
+        if [ -n "$NAT_GATEWAY_ID" ]; then
+            echo "export NAT_GATEWAY_ID=\"$NAT_GATEWAY_ID\"" >> "$NAT_GW_CONFIG_FILE"
+        fi
+        chmod +x "$NAT_GW_CONFIG_FILE"
+        echo "Updated $NAT_GW_CONFIG_FILE with unassociated EIP Allocation ID."
+    fi
+fi
+
+# Only allocate a new EIP if we couldn't find any existing ones
+if [ "$EIP_EXISTS" = false ]; then
+    echo "No existing Elastic IPs found. Allocating new Elastic IP..."
     ALLOCATION_RESULT=$(aws ec2 allocate-address --domain vpc --query 'AllocationId' --output text --region $AWS_REGION)
     if [ $? -ne 0 ] || [ -z "$ALLOCATION_RESULT" ]; then echo "Failed to allocate Elastic IP"; exit 1; fi
     EIP_ALLOCATION_ID=$ALLOCATION_RESULT
-    echo "Allocated Elastic IP with Allocation ID: $EIP_ALLOCATION_ID"
+    
+    # Tag the new EIP
+    aws ec2 create-tags --resources $EIP_ALLOCATION_ID --tags Key=AppName,Value="$APP_NAME" Key=Name,Value="${APP_NAME}-nat-eip" --region $AWS_REGION
+    
+    echo "Allocated and tagged new Elastic IP with Allocation ID: $EIP_ALLOCATION_ID"
     # Save/Update the new ID - Overwrite the file robustly
     echo "#!/bin/bash" > "$NAT_GW_CONFIG_FILE"
     echo "# NAT Gateway Configuration" >> "$NAT_GW_CONFIG_FILE"
-    echo "export EIP_ALLOCATION_ID=\\"$EIP_ALLOCATION_ID\\"" >> "$NAT_GW_CONFIG_FILE"
+    echo "export EIP_ALLOCATION_ID=\"$EIP_ALLOCATION_ID\"" >> "$NAT_GW_CONFIG_FILE"
     # Add NAT_GATEWAY_ID placeholder if it existed before, otherwise it gets added later
     if [ -n "$NAT_GATEWAY_ID" ]; then
-        echo "export NAT_GATEWAY_ID=\\"$NAT_GATEWAY_ID\\"" >> "$NAT_GW_CONFIG_FILE"
+        echo "export NAT_GATEWAY_ID=\"$NAT_GATEWAY_ID\"" >> "$NAT_GW_CONFIG_FILE"
     fi
     chmod +x "$NAT_GW_CONFIG_FILE"
     echo "Updated $NAT_GW_CONFIG_FILE with new EIP Allocation ID."
@@ -144,14 +199,48 @@ fi
 # --- Check/Create NAT Gateway in Public Subnet 1 ---
 echo "Checking/Creating NAT Gateway..."
 NAT_GATEWAY_ID_FOUND=""
+
+# First check if we have a stored NAT Gateway ID
 if [ ! -z "$NAT_GATEWAY_ID" ]; then
     GW_STATE=$(aws ec2 describe-nat-gateways --nat-gateway-ids $NAT_GATEWAY_ID --query 'NatGateways[0].State' --output text --region $AWS_REGION 2>/dev/null)
-    if [ $? -eq 0 ] && [[ "$GW_STATE" != "deleted" && "$GW_STATE" != "failed" ]]; then
+    if [ $? -eq 0 ] && [[ "$GW_STATE" != "deleted" && "$GW_STATE" != "failed" && "$GW_STATE" != "None" ]]; then
         echo "Found existing NAT Gateway: $NAT_GATEWAY_ID (State: $GW_STATE)"
         NAT_GATEWAY_ID_FOUND=$NAT_GATEWAY_ID
     else
-        echo "Stored NAT Gateway ID $NAT_GATEWAY_ID not found or in unusable state. Will create a new one."
+        echo "Stored NAT Gateway ID $NAT_GATEWAY_ID not found, deleted, or in unusable state. Will search for other NAT Gateways."
         NAT_GATEWAY_ID=""
+    fi
+fi
+
+# If not found by ID, search by app tag and VPC ID
+if [ -z "$NAT_GATEWAY_ID_FOUND" ]; then
+    echo "Searching for existing NAT Gateway with AppName=$APP_NAME in VPC $VPC_ID..."
+    
+    # Look for active NAT Gateways in our VPC with our app tag
+    NAT_GW_BY_TAG=$(aws ec2 describe-nat-gateways \
+      --filter "Name=vpc-id,Values=$VPC_ID" "Name=state,Values=available,pending" "Name=tag:AppName,Values=$APP_NAME" \
+      --query 'NatGateways[0].NatGatewayId' \
+      --output text \
+      --region $AWS_REGION)
+    
+    if [ -n "$NAT_GW_BY_TAG" ] && [ "$NAT_GW_BY_TAG" != "None" ]; then
+        echo "Found existing NAT Gateway by tag: $NAT_GW_BY_TAG"
+        NAT_GATEWAY_ID_FOUND=$NAT_GW_BY_TAG
+    else
+        # If not found by tag, look for any active NAT Gateway in our VPC that's using our Elastic IP
+        if [ -n "$EIP_ALLOCATION_ID" ]; then
+            echo "Searching for existing NAT Gateway using our Elastic IP allocation ID: $EIP_ALLOCATION_ID"
+            NAT_GW_BY_EIP=$(aws ec2 describe-nat-gateways \
+              --filter "Name=vpc-id,Values=$VPC_ID" "Name=state,Values=available,pending" \
+              --query "NatGateways[?NatGatewayAddresses[?AllocationId=='$EIP_ALLOCATION_ID']].NatGatewayId" \
+              --output text \
+              --region $AWS_REGION)
+              
+            if [ -n "$NAT_GW_BY_EIP" ] && [ "$NAT_GW_BY_EIP" != "None" ]; then
+                echo "Found existing NAT Gateway using our EIP: $NAT_GW_BY_EIP"
+                NAT_GATEWAY_ID_FOUND=$NAT_GW_BY_EIP
+            fi
+        fi
     fi
 fi
 
@@ -172,8 +261,8 @@ if [ -z "$NAT_GATEWAY_ID_FOUND" ]; then
     # Save/Update the new ID - Overwrite the file robustly
     echo "#!/bin/bash" > "$NAT_GW_CONFIG_FILE"
     echo "# NAT Gateway Configuration" >> "$NAT_GW_CONFIG_FILE"
-    echo "export EIP_ALLOCATION_ID=\\"$EIP_ALLOCATION_ID\\"" >> "$NAT_GW_CONFIG_FILE" # Keep existing EIP ID
-    echo "export NAT_GATEWAY_ID=\\"$NAT_GATEWAY_ID\\"" >> "$NAT_GW_CONFIG_FILE" # Add the new NAT GW ID
+    echo "export EIP_ALLOCATION_ID=\"$EIP_ALLOCATION_ID\"" >> "$NAT_GW_CONFIG_FILE" # Keep existing EIP ID
+    echo "export NAT_GATEWAY_ID=\"$NAT_GATEWAY_ID\"" >> "$NAT_GW_CONFIG_FILE" # Add the new NAT GW ID
     chmod +x "$NAT_GW_CONFIG_FILE"
     echo "Updated $NAT_GW_CONFIG_FILE with new NAT Gateway ID."
 
@@ -185,11 +274,14 @@ else
      # Ensure the config file reflects the found IDs even if no creation happened
      echo "#!/bin/bash" > "$NAT_GW_CONFIG_FILE"
      echo "# NAT Gateway Configuration" >> "$NAT_GW_CONFIG_FILE"
-     echo "export EIP_ALLOCATION_ID=\\"$EIP_ALLOCATION_ID\\"" >> "$NAT_GW_CONFIG_FILE"
-     echo "export NAT_GATEWAY_ID=\\"$NAT_GATEWAY_ID\\"" >> "$NAT_GW_CONFIG_FILE"
+     echo "export EIP_ALLOCATION_ID=\"$EIP_ALLOCATION_ID\"" >> "$NAT_GW_CONFIG_FILE"
+     echo "export NAT_GATEWAY_ID=\"$NAT_GATEWAY_ID\"" >> "$NAT_GW_CONFIG_FILE"
      chmod +x "$NAT_GW_CONFIG_FILE"
+     
+     # Check state and wait if needed
+     GW_STATE=$(aws ec2 describe-nat-gateways --nat-gateway-ids $NAT_GATEWAY_ID --query 'NatGateways[0].State' --output text --region $AWS_REGION)
      if [ "$GW_STATE" != "available" ]; then
-        echo "Waiting for existing NAT Gateway $NAT_GATEWAY_ID to become available..."
+        echo "Waiting for existing NAT Gateway $NAT_GATEWAY_ID to become available (current state: $GW_STATE)..."
         aws ec2 wait nat-gateway-available --nat-gateway-ids $NAT_GATEWAY_ID --region $AWS_REGION
         if [ $? -ne 0 ]; then echo "NAT Gateway $NAT_GATEWAY_ID failed to become available."; exit 1; fi
         echo "NAT Gateway $NAT_GATEWAY_ID is available."

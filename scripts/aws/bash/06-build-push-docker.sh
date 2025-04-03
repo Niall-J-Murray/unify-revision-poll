@@ -40,8 +40,8 @@ echo "Dockerfile found."
 
 # Build the Docker image from the current directory (.), tagging directly with unique tag
 IMAGE_URI_WITH_TAG="${REPOSITORY_URI}:${UNIQUE_TAG}"
-echo "Running docker build -t $IMAGE_URI_WITH_TAG from context: $(pwd)"
-docker build -t $IMAGE_URI_WITH_TAG .
+echo "Running docker build --no-cache -t $IMAGE_URI_WITH_TAG from context: $(pwd)"
+docker build --no-cache -t $IMAGE_URI_WITH_TAG .
 if [ $? -ne 0 ]; then echo "Docker build failed"; exit 1; fi
 
 # Push the uniquely tagged image to ECR

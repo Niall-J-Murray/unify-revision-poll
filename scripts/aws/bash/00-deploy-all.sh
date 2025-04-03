@@ -13,6 +13,7 @@ source "$SCRIPT_DIR/02-configure-aws-cli.sh" || { echo "Failed Step 0: AWS CLI c
 # --- Step 0b: Hosted Zone Setup ---
 echo "Step 0b: Checking/Creating Route 53 Hosted Zone..."
 source "$SCRIPT_DIR/02b-create-hosted-zone.sh" || { echo "Failed Step 0b: Hosted Zone setup"; exit 1; }
+
 # Manual Step Reminder: Update registrar nameservers after this if zone was created!
 
 # --- Step 1: Networking --- 
