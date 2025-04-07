@@ -66,6 +66,11 @@ jobs:
         run: |
           aws ecs describe-task-definition --task-definition ${{ secrets.ECS_TASK_DEFINITION_FAMILY }} --query taskDefinition > task-definition.json
 
+      # Add this step for debugging
+      - name: Debug Print Image Output
+        run: |
+          echo "Image output from build-and-push job: ${{ needs.build-and-push.outputs.image }}"
+
       - name: Fill in the new image ID in the Amazon ECS task definition
         id: task-def
         uses: aws-actions/amazon-ecs-render-task-definition@v1
