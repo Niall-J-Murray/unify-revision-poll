@@ -45,3 +45,12 @@ node_modules
 .vercel
 
 .early.coverage
+
+# Terraform
+/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+crash.log
+crash.*.log
+terraform/.terraform/
