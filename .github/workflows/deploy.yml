@@ -10,15 +10,13 @@ on:
 
 permissions:
   contents: read # Needed to check out the repository
-  id-token: write # Required for AWS OIDC authentication
+  # id-token: write # Required for AWS OIDC - Not needed if using access keys
 
 jobs:
   build-and-push:
     name: Build and Push Docker Image to ECR
     runs-on: ubuntu-latest
-    outputs:
-      # Construct the image URI directly here to avoid secret scanning issue
-      image: ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:${{ github.sha }}
+    # Removed outputs section
 
     steps:
       - name: Checkout code
@@ -32,11 +30,11 @@ jobs:
           aws-region: ${{ secrets.AWS_REGION }}
 
       - name: Login to Amazon ECR
-        id: login-ecr # Keep ID for registry output
+        id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Build, tag, and push image to Amazon ECR
-        # Removed id: build-image
+        id: build-image # Add ID back to reference image tag
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
@@ -45,9 +43,14 @@ jobs:
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
-          # Removed echo to GITHUB_OUTPUT
+          # Save image URI to a file
+          echo "${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}" > image-uri.txt
 
-      # Removed the debug step within build-and-push
+      - name: Upload image URI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-artifact
+          path: image-uri.txt
 
   deploy:
     name: Deploy to ECS
@@ -65,27 +68,34 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
 
+      - name: Download image URI artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: image-artifact
+          # path defaults to workspace root
+
+      - name: Read image URI from file
+        id: image-uri-step
+        run: echo "image_uri=$(cat image-uri.txt)" >> $GITHUB_OUTPUT
+
       - name: Download task definition
         run: |
           aws ecs describe-task-definition --task-definition ${{ secrets.ECS_TASK_DEFINITION_FAMILY }} --query taskDefinition > task-definition.json
 
-      # Add this step for debugging
-      - name: Debug Print Image Output
-        run: |
-          echo "Image output from build-and-push job: ${{ needs.build-and-push.outputs.image }}"
+      # Removed Debug Print Image Output step
 
       - name: Fill in the new image ID in the Amazon ECS task definition
         id: task-def
         uses: aws-actions/amazon-ecs-render-task-definition@v1
         with:
           task-definition: task-definition.json
-          container-name: feature-poll-app-container # <-- Confirm this matches your container name in ECS task definition
-          image: ${{ needs.build-and-push.outputs.image }}
+          container-name: feature-poll-app-container
+          image: ${{ steps.image-uri-step.outputs.image_uri }} # Use output from reading the file
 
       - name: Deploy Amazon ECS task definition
         uses: aws-actions/amazon-ecs-deploy-task-definition@v1
         with:
           task-definition: ${{ steps.task-def.outputs.task-definition }}
-          service: feature-poll-app-service # <-- Service name provided
+          service: feature-poll-app-service
           cluster: ${{ secrets.ECS_CLUSTER_NAME }}
-          wait-for-service-stability: true # Optional: waits for the service to become stable
+          wait-for-service-stability: true
