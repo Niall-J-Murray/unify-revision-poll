@@ -16,6 +16,8 @@ jobs:
   build-and-push:
     name: Build and Push Docker Image to ECR
     runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.build-image.outputs.image }}
 
     steps:
       - name: Checkout code
