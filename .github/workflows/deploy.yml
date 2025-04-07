@@ -17,7 +17,8 @@ jobs:
     name: Build and Push Docker Image to ECR
     runs-on: ubuntu-latest
     outputs:
-      image: ${{ steps.build-image.outputs.image }}
+      # Construct the image URI directly here to avoid secret scanning issue
+      image: ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:${{ github.sha }}
 
     steps:
       - name: Checkout code
@@ -31,11 +32,11 @@ jobs:
           aws-region: ${{ secrets.AWS_REGION }}
 
       - name: Login to Amazon ECR
-        id: login-ecr
+        id: login-ecr # Keep ID for registry output
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Build, tag, and push image to Amazon ECR
-        id: build-image
+        # Removed id: build-image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
@@ -44,12 +45,9 @@ jobs:
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
-          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+          # Removed echo to GITHUB_OUTPUT
 
-      # Add this step for debugging within build-and-push
-      - name: Debug Print Image Output Within build-and-push
-        run: |
-          echo "Image output set in build-image step: ${{ steps.build-image.outputs.image }}"
+      # Removed the debug step within build-and-push
 
   deploy:
     name: Deploy to ECS
