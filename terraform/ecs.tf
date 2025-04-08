@@ -279,6 +279,10 @@ resource "aws_ecs_service" "app" {
   # Ensure ASG instances are ready before starting service tasks
   depends_on = [aws_autoscaling_group.ecs_asg, aws_lb_listener.https]
 
+  # Change deployment strategy to allow task replacement on ENI-limited instances
+  deployment_minimum_healthy_percent = 0
+  deployment_maximum_percent         = 100 # Optional: Can be 100 or 200, but 100 is clearer with min 0
+
   # Optional: Health check grace period for the service
   health_check_grace_period_seconds = 120 # Give tasks time to start and become healthy
 
