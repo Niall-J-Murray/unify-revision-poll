@@ -73,7 +73,7 @@ resource "aws_ecs_task_definition" "app" {
   network_mode             = "awsvpc"
   requires_compatibilities = ["EC2"]
   cpu                      = "256"  # Minimal CPU units for t3.micro
-  memory                   = "512"  # Minimal Memory (MiB) for t3.micro
+  memory                   = "256"  # Minimal Memory (MiB) for t3.micro
   execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
   task_role_arn            = aws_iam_role.ecs_task_execution_role.arn # Can use the same role if no other AWS services are accessed by the app itself
 
@@ -82,7 +82,7 @@ resource "aws_ecs_task_definition" "app" {
       name      = "${var.subdomain_name}-app-container"
       image     = "${aws_ecr_repository.app.repository_url}:latest" # Assumes image tagged as 'latest'
       cpu       = 256
-      memory    = 512
+      memory    = 256
       essential = true
       portMappings = [
         {
