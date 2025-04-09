@@ -94,7 +94,7 @@ resource "aws_internet_gateway" "gw" {
 
 # --- Elastic IP for NAT Gateway ---
 resource "aws_eip" "nat" {
-  domain   = "vpc"
+  domain     = "vpc"
   depends_on = [aws_internet_gateway.gw]
 
   tags = merge(var.tags, {
@@ -317,7 +317,7 @@ resource "aws_lb" "main" {
   load_balancer_type = "application"
   security_groups    = [aws_security_group.lb.id]
   # Use both public subnets across the two AZs
-  subnets            = [aws_subnet.public_a.id, aws_subnet.public_b.id]
+  subnets = [aws_subnet.public_a.id, aws_subnet.public_b.id]
 
   enable_deletion_protection = false # Set to true for production
 

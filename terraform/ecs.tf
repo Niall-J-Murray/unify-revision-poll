@@ -46,7 +46,7 @@ resource "aws_iam_policy" "secrets_manager_access" {
           "kms:Decrypt" # Required if the secret is encrypted with a KMS key
         ],
         Effect   = "Allow",
-        Resource = aws_secretsmanager_secret.app_secrets.arn
+        Resource = data.aws_secretsmanager_secret.existing_app_secrets.arn
       }
     ]
   })
@@ -57,6 +57,13 @@ resource "aws_iam_policy" "secrets_manager_access" {
 resource "aws_iam_role_policy_attachment" "secrets_manager_access_attach" {
   role       = aws_iam_role.ecs_task_execution_role.name
   policy_arn = aws_iam_policy.secrets_manager_access.arn
+}
+
+# Add this data source to find the existing secret
+data "aws_secretsmanager_secret" "existing_app_secrets" {
+  // Use the exact name string that corresponds to the existing secret in AWS
+  // This assumes your variables resolve to "/feature-poll/murrdev.com/app-secrets"
+  name = "/${var.subdomain_name}/${var.domain_name}/app-secrets"
 }
 
 # --- CloudWatch Log Group ---
@@ -72,8 +79,8 @@ resource "aws_ecs_task_definition" "app" {
   family                   = "${var.subdomain_name}-app-task"
   network_mode             = "awsvpc"
   requires_compatibilities = ["EC2"]
-  cpu                      = "256"  # Minimal CPU units for t3.micro
-  memory                   = "256"  # Minimal Memory (MiB) for t3.micro
+  cpu                      = "256" # Minimal CPU units for t3.micro
+  memory                   = "256" # Minimal Memory (MiB) for t3.micro
   execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
   task_role_arn            = aws_iam_role.ecs_task_execution_role.arn # Can use the same role if no other AWS services are accessed by the app itself
 
@@ -91,11 +98,11 @@ resource "aws_ecs_task_definition" "app" {
           protocol      = "tcp"
         }
       ]
-      # Inject secrets from Secrets Manager
+      # Inject secrets from Secrets Manager using the looked-up ARN
       secrets = [
         for k, v in local.app_secrets : {
           name      = k
-          valueFrom = "${aws_secretsmanager_secret.app_secrets.arn}:${k}::"
+          valueFrom = "${data.aws_secretsmanager_secret.existing_app_secrets.arn}:${k}::" # Use data source ARN
         }
       ]
       logConfiguration = {
@@ -226,7 +233,7 @@ resource "aws_launch_template" "ecs_launch_template" {
 
 # --- Auto Scaling Group for ECS Instances (using Launch Template) ---
 resource "aws_autoscaling_group" "ecs_asg" {
-  name_prefix         = "${var.subdomain_name}-ecs-asg-"
+  name_prefix = "${var.subdomain_name}-ecs-asg-"
   # Reference the Launch Template
   launch_template {
     id      = aws_launch_template.ecs_launch_template.id

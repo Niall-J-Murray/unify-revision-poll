@@ -3,7 +3,7 @@ locals {
   # Note: This assumes the .env file exists one level up from the terraform directory.
   # Adjust the path if your .env file is located elsewhere.
   raw_env_content = fileexists("../.env") ? file("../.env") : ""
-  
+
   # 1. Split into lines and filter out invalid/empty/comment lines
   valid_lines = [
     for line in split("\n", local.raw_env_content) :
@@ -24,11 +24,11 @@ locals {
 
   # Include database credentials and other necessary variables
   app_secrets = merge(local.env_vars, {
-    NODE_ENV      = "production"
-    DATABASE_URL  = "postgresql://${var.rds_db_user}:${var.rds_db_password}@${aws_db_instance.main.address}/${var.rds_db_name}"
+    NODE_ENV     = "production"
+    DATABASE_URL = "postgresql://${var.rds_db_user}:${var.rds_db_password}@${aws_db_instance.main.address}/${var.rds_db_name}"
     # DIRECT_URL is often the same as DATABASE_URL for non-pooled connections
-    DIRECT_URL    = "postgresql://${var.rds_db_user}:${var.rds_db_password}@${aws_db_instance.main.address}/${var.rds_db_name}"
-    NEXTAUTH_URL  = "https://${var.subdomain_name}.${var.domain_name}"
+    DIRECT_URL   = "postgresql://${var.rds_db_user}:${var.rds_db_password}@${aws_db_instance.main.address}/${var.rds_db_name}"
+    NEXTAUTH_URL = "https://${var.subdomain_name}.${var.domain_name}"
     # Add any other required runtime environment variables here
     # If the .env file contains keys matching these (e.g., NEXTAUTH_URL), 
     # the values defined here will take precedence due to the merge order.
