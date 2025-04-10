@@ -62,4 +62,5 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 CMD wget -qO- http://localhost:3000/api/health || exit 1
 
 # Run database migrations, then seed the database, and then start the application
-CMD ["sh", "-c", "npx prisma migrate deploy && npx prisma db seed && npm run start"] 
+# Use semicolons and echo for better debugging
+CMD ["sh", "-c", "echo 'Attempting migrations...' && npx prisma migrate deploy; echo 'Attempting seeding...' && npx prisma db seed; echo 'Starting application...' && npm run start"] 
