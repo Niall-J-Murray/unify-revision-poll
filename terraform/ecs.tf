@@ -46,7 +46,7 @@ resource "aws_iam_policy" "secrets_manager_access" {
           "kms:Decrypt" # Required if the secret is encrypted with a KMS key
         ],
         Effect   = "Allow",
-        Resource = data.aws_secretsmanager_secret.existing_app_secrets.arn
+        Resource = aws_secretsmanager_secret.app_secrets.arn
       }
     ]
   })
@@ -57,13 +57,6 @@ resource "aws_iam_policy" "secrets_manager_access" {
 resource "aws_iam_role_policy_attachment" "secrets_manager_access_attach" {
   role       = aws_iam_role.ecs_task_execution_role.name
   policy_arn = aws_iam_policy.secrets_manager_access.arn
-}
-
-# Add this data source to find the existing secret
-data "aws_secretsmanager_secret" "existing_app_secrets" {
-  // Use the exact name string that corresponds to the existing secret in AWS
-  // This assumes your variables resolve to "/feature-poll/murrdev.com/app-secrets"
-  name = "/${var.subdomain_name}/${var.domain_name}/app-secrets"
 }
 
 # --- CloudWatch Log Group ---
@@ -102,7 +95,7 @@ resource "aws_ecs_task_definition" "app" {
       secrets = [
         for k, v in local.app_secrets : {
           name      = k
-          valueFrom = "${data.aws_secretsmanager_secret.existing_app_secrets.arn}:${k}::" # Use data source ARN
+          valueFrom = "${aws_secretsmanager_secret.app_secrets.arn}:${k}::"
         }
       ]
       logConfiguration = {

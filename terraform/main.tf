@@ -17,6 +17,8 @@ data "aws_availability_zones" "available" {
   state = "available"
 }
 
+data "aws_caller_identity" "current" {}
+
 # Get zone details
 data "aws_availability_zone" "az_a" {
   name = var.availability_zone_a
@@ -257,42 +259,51 @@ resource "aws_security_group" "ecs_task" {
   })
 }
 
+# --- Bastion Host Components (Traditional SSH) ---
 
-# Security Group for RDS (allows traffic from ECS Tasks/Instances)
-resource "aws_security_group" "rds" {
-  name        = "${var.subdomain_name}-rds-sg"
-  description = "Allow PostgreSQL traffic from ECS Tasks"
+# Security Group for the Bastion Host instance
+resource "aws_security_group" "bastion_host" {
+  name        = "${var.subdomain_name}-bastion-host-sg"
+  description = "Allow SSH inbound from admin and all outbound"
   vpc_id      = aws_vpc.main.id
 
-  # Allow traffic from ECS tasks within the VPC
+  # Allow SSH inbound from your IPv6 and IPv4 addresses
   ingress {
-    description     = "PostgreSQL from ECS tasks"
-    from_port       = 5432
-    to_port         = 5432
-    protocol        = "tcp"
-    security_groups = [aws_security_group.ecs_task.id] # Only allow from ECS Task SG
-    # Potentially add aws_security_group.ecs_instance.id if direct instance access is needed
+    description      = "SSH from Admin IPs"
+    from_port        = 22
+    to_port          = 22
+    protocol         = "tcp"
+    cidr_blocks      = ["37.228.207.138/32"]
+    ipv6_cidr_blocks = ["2a02:8084:41c0:1a00:a1d8:e8c4:31ad:d688/128"]
   }
 
-  # Restrict public access - IMPORTANT: For testing only as requested.
-  # In production, restrict this to specific IPs or Bastion Host SG.
-  ingress {
-    description = "Allow DB access from anywhere (TESTING ONLY)"
-    from_port   = 5432
-    to_port     = 5432
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
+  # Allow all outbound traffic (needed for SSH replies, updates, reaching RDS)
   egress {
-    from_port   = 0 # Allow outbound traffic (generally not needed for RDS, but safe default)
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    from_port        = 0
+    to_port          = 0
+    protocol         = "-1"
+    cidr_blocks      = ["0.0.0.0/0"]
+    ipv6_cidr_blocks = ["::/0"]
   }
 
   tags = merge(var.tags, {
-    Name = "${var.subdomain_name}-rds-sg"
+    Name = "${var.subdomain_name}-bastion-host-sg"
+  })
+}
+
+# EC2 Instance for Bastion Host
+resource "aws_instance" "bastion_host" {
+  ami           = data.aws_ami.amazon_linux_2023.id # Reuse the AMI data source
+  instance_type = "t3.micro" # Small instance type is sufficient
+
+  subnet_id                   = aws_subnet.public_a.id # Place in a PUBLIC subnet
+  associate_public_ip_address = true                   # Needs a public IP
+
+  vpc_security_group_ids = [aws_security_group.bastion_host.id]
+  key_name               = "bastion-host" # Your provided key pair name
+
+  tags = merge(var.tags, {
+    Name = "${var.subdomain_name}-bastion-host"
   })
 }
 
@@ -398,5 +409,21 @@ resource "aws_route53_record" "app" {
     name                   = aws_lb.main.dns_name
     zone_id                = aws_lb.main.zone_id
     evaluate_target_health = true
+  }
+}
+
+# EC2 Instance for Bastion Host
+data "aws_ami" "amazon_linux_2023" {
+  most_recent = true
+  owners      = ["amazon"]
+
+  filter {
+    name   = "name"
+    values = ["al2023-ami-*-kernel-*-x86_64"]
+  }
+
+  filter {
+    name   = "architecture"
+    values = ["x86_64"]
   }
 } 

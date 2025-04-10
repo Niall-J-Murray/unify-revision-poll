@@ -14,18 +14,21 @@ resource "aws_vpc_endpoint" "s3" {
   })
 }
 
-# Security Group for Interface Endpoints (Allow HTTPS from ECS Task SG)
+# Security Group for Interface Endpoints (Allow HTTPS from ECS Task SG and ECS Instance SG)
 resource "aws_security_group" "vpc_endpoints" {
   name        = "${var.subdomain_name}-vpc-endpoints-sg"
   description = "Allow HTTPS from ECS Tasks to VPC Interface Endpoints"
   vpc_id      = aws_vpc.main.id
 
   ingress {
-    description     = "HTTPS from ECS Tasks"
+    description     = "HTTPS from ECS Tasks and Instances"
     from_port       = 443
     to_port         = 443
     protocol        = "tcp"
-    security_groups = [aws_security_group.ecs_task.id] # Allow from the ECS Task SG defined in main.tf
+    security_groups = [
+      aws_security_group.ecs_task.id,     # Defined in main.tf
+      aws_security_group.ecs_instance.id  # Defined in main.tf
+    ]
   }
 
   # Allow all outbound (endpoints may need to talk to other services)

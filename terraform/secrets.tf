@@ -36,8 +36,8 @@ locals {
 }
 
 resource "aws_secretsmanager_secret" "app_secrets" {
-  name        = "/${var.subdomain_name}/${var.domain_name}/app-secrets"
-  description = "Application environment variables for ${var.subdomain_name}.${var.domain_name}"
+  name        = "/${var.subdomain_name}/${var.domain_name}/app-secrets-v3"
+  description = "Application environment variables for ${var.subdomain_name}.${var.domain_name} (v3)"
 
   tags = var.tags
 }

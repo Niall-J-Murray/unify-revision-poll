@@ -54,3 +54,8 @@ node_modules
 crash.log
 crash.*.log
 terraform/.terraform/
+
+# Environment variables
+.env
+.env*.local
+.env.production
