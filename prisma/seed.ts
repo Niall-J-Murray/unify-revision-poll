@@ -9,15 +9,19 @@ const adminEmail = "niall.murray.dev@gmail.com";
 async function main() {
   console.log("🌱 Starting seeding...");
 
-  const userCount = await prisma.user.count();
+  // Check if the specific admin user already exists
+  const existingAdmin = await prisma.user.findUnique({
+    where: { email: adminEmail },
+  });
 
-  if (userCount === 0) {
-    console.log("No users found. Creating initial admin user...");
+  // if (userCount === 0) { // Old logic
+  if (!existingAdmin) {
+    // New logic: Create only if admin doesn't exist
+    console.log(`Admin user (${adminEmail}) not found. Creating admin user...`);
 
     // Use the constant defined above
-    // const adminEmail = "niall.murray.dev@gmail.com";
     const adminName = "Murrmin";
-    const plainPassword = "Murrpass321!";
+    const plainPassword = "Murrpass321!"; // Make sure this is secure or ideally sourced from env vars
 
     // Hash the password
     const saltRounds = 10;
@@ -38,13 +42,13 @@ async function main() {
     );
   } else {
     console.log(
-      `Database already contains ${userCount} users. Skipping admin user creation.`
+      `Admin user (${adminEmail}) already exists. Skipping admin user creation.`
     );
   }
 
   // --- REMOVED OTHER SEEDING LOGIC ---
 
-  console.log("🌱 Seeding finished (Admin user only).");
+  console.log("🌱 Seeding finished."); // Adjusted message slightly
 }
 
 main()
