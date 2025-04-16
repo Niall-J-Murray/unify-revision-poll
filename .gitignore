@@ -59,3 +59,42 @@ terraform/.terraform/
 .env
 .env*.local
 .env.production
+
+# Terraform state files
+*.tfstate
+*.tfstate.*
+
+# Terraform provider lock file
+.terraform.lock.hcl
+
+# Terraform provider binaries and modules directory
+.terraform/
+
+# Ignore Terraform dev directory specific files
+terraform-dev/.terraform/
+terraform-dev/*.tfstate
+terraform-dev/*.tfstate.*
+terraform-dev/.terraform.lock.hcl
+
+# Ignore environment variables file
+.env
+
+# Next.js build output
+.next/
+
+# Node.js dependencies
+node_modules/
+
+# Test coverage
+coverage/
+
+# Production build
+build/
+
+# Prisma client and migrations
+/prisma/generated/
+/prisma/migrations/*/*.sql
+
+# OS generated files
+.DS_Store
+Thumbs.db
