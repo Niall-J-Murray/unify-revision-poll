@@ -311,6 +311,7 @@ resource "aws_instance" "bastion_host" {
 resource "aws_ecr_repository" "app" {
   name                 = "${var.subdomain_name}-app-repo"
   image_tag_mutability = "MUTABLE" # Or IMMUTABLE for stricter versioning
+  force_delete         = true
 
   image_scanning_configuration {
     scan_on_push = true

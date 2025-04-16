@@ -213,6 +213,34 @@ resource "aws_security_group" "ecs_task" {
   })
 }
 
+# Security Group for RDS instance
+resource "aws_security_group" "rds" {
+  name        = "${var.subdomain_name}-rds-sg"
+  description = "Allow traffic from ECS tasks to RDS instance"
+  vpc_id      = aws_vpc.main.id
+
+  # Allow inbound PostgreSQL traffic from ECS tasks
+  ingress {
+    description     = "PostgreSQL from ECS tasks"
+    from_port       = 5432
+    to_port         = 5432
+    protocol        = "tcp"
+    security_groups = [aws_security_group.ecs_task.id] # Allow from the ECS task SG
+  }
+
+  # Typically no egress rules needed unless RDS needs to initiate connections (uncommon)
+  # egress {
+  #   from_port   = 0
+  #   to_port     = 0
+  #   protocol    = "-1"
+  #   cidr_blocks = ["0.0.0.0/0"]
+  # }
+
+  tags = merge(var.tags, {
+    Name = "${var.subdomain_name}-rds-sg"
+  })
+}
+
 # --- Bastion Host Components (Traditional SSH) ---
 
 # Security Group for the Bastion Host instance

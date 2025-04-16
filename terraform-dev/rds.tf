@@ -22,7 +22,7 @@ resource "aws_db_instance" "main" {
   parameter_group_name   = "default.postgres17"
   # Point back to the original (private) subnet group
   db_subnet_group_name   = aws_db_subnet_group.rds.name 
-  vpc_security_group_ids = [aws_security_group.ecs_task.id]
+  vpc_security_group_ids = [aws_security_group.rds.id]
 
   # Cost Optimization Settings
   multi_az                     = false # Disable Multi-AZ (Still allowed even with multi-AZ subnet group)
