@@ -1,0 +1,127 @@
+{
+    "family": "feature-poll-app-task",
+    "containerDefinitions": [
+        {
+            "name": "feature-poll-app-container",
+            "image": "765194364851.dkr.ecr.eu-west-1.amazonaws.com/feature-poll-app-repo:3fa558fb9243198d13e854bfb34065a2fee6f8c6",
+            "cpu": 256,
+            "memory": 256,
+            "portMappings": [
+                {
+                    "containerPort": 3000,
+                    "hostPort": 3000,
+                    "protocol": "tcp"
+                }
+            ],
+            "essential": true,
+            "command": [
+                "sh",
+                "-c",
+                "npx prisma migrate deploy && npm run start"
+            ],
+            "environment": [],
+            "mountPoints": [],
+            "volumesFrom": [],
+            "secrets": [
+                {
+                    "name": "DATABASE_URL",
+                    "valueFrom": "arn:aws:secretsmanager:eu-west-1:765194364851:secret:/feature-poll/murrdev.com/app-secrets-v4-jAbBeN:DATABASE_URL::"
+                },
+                {
+                    "name": "DIRECT_URL",
+                    "valueFrom": "arn:aws:secretsmanager:eu-west-1:765194364851:secret:/feature-poll/murrdev.com/app-secrets-v4-jAbBeN:DIRECT_URL::"
+                },
+                {
+                    "name": "EMAIL_FROM",
+                    "valueFrom": "arn:aws:secretsmanager:eu-west-1:765194364851:secret:/feature-poll/murrdev.com/app-secrets-v4-jAbBeN:EMAIL_FROM::"
+                },
+                {
+                    "name": "EMAIL_SERVER_HOST",
+                    "valueFrom": "arn:aws:secretsmanager:eu-west-1:765194364851:secret:/feature-poll/murrdev.com/app-secrets-v4-jAbBeN:EMAIL_SERVER_HOST::"
+                },
+                {
+                    "name": "EMAIL_SERVER_PASSWORD",
+                    "valueFrom": "arn:aws:secretsmanager:eu-west-1:765194364851:secret:/feature-poll/murrdev.com/app-secrets-v4-jAbBeN:EMAIL_SERVER_PASSWORD::"
+                },
+                {
+                    "name": "EMAIL_SERVER_PORT",
+                    "valueFrom": "arn:aws:secretsmanager:eu-west-1:765194364851:secret:/feature-poll/murrdev.com/app-secrets-v4-jAbBeN:EMAIL_SERVER_PORT::"
+                },
+                {
+                    "name": "EMAIL_SERVER_USER",
+                    "valueFrom": "arn:aws:secretsmanager:eu-west-1:765194364851:secret:/feature-poll/murrdev.com/app-secrets-v4-jAbBeN:EMAIL_SERVER_USER::"
+                },
+                {
+                    "name": "GITHUB_ID",
+                    "valueFrom": "arn:aws:secretsmanager:eu-west-1:765194364851:secret:/feature-poll/murrdev.com/app-secrets-v4-jAbBeN:GITHUB_ID::"
+                },
+                {
+                    "name": "GITHUB_SECRET",
+                    "valueFrom": "arn:aws:secretsmanager:eu-west-1:765194364851:secret:/feature-poll/murrdev.com/app-secrets-v4-jAbBeN:GITHUB_SECRET::"
+                },
+                {
+                    "name": "GOOGLE_CLIENT_ID",
+                    "valueFrom": "arn:aws:secretsmanager:eu-west-1:765194364851:secret:/feature-poll/murrdev.com/app-secrets-v4-jAbBeN:GOOGLE_CLIENT_ID::"
+                },
+                {
+                    "name": "GOOGLE_CLIENT_SECRET",
+                    "valueFrom": "arn:aws:secretsmanager:eu-west-1:765194364851:secret:/feature-poll/murrdev.com/app-secrets-v4-jAbBeN:GOOGLE_CLIENT_SECRET::"
+                },
+                {
+                    "name": "NEXTAUTH_SECRET",
+                    "valueFrom": "arn:aws:secretsmanager:eu-west-1:765194364851:secret:/feature-poll/murrdev.com/app-secrets-v4-jAbBeN:NEXTAUTH_SECRET::"
+                },
+                {
+                    "name": "NEXTAUTH_URL",
+                    "valueFrom": "arn:aws:secretsmanager:eu-west-1:765194364851:secret:/feature-poll/murrdev.com/app-secrets-v4-jAbBeN:NEXTAUTH_URL::"
+                },
+                {
+                    "name": "NEXT_PUBLIC_SUPABASE_ANON_KEY",
+                    "valueFrom": "arn:aws:secretsmanager:eu-west-1:765194364851:secret:/feature-poll/murrdev.com/app-secrets-v4-jAbBeN:NEXT_PUBLIC_SUPABASE_ANON_KEY::"
+                },
+                {
+                    "name": "NEXT_PUBLIC_SUPABASE_URL",
+                    "valueFrom": "arn:aws:secretsmanager:eu-west-1:765194364851:secret:/feature-poll/murrdev.com/app-secrets-v4-jAbBeN:NEXT_PUBLIC_SUPABASE_URL::"
+                },
+                {
+                    "name": "NODE_ENV",
+                    "valueFrom": "arn:aws:secretsmanager:eu-west-1:765194364851:secret:/feature-poll/murrdev.com/app-secrets-v4-jAbBeN:NODE_ENV::"
+                },
+                {
+                    "name": "SUPABASE_ANON_KEY",
+                    "valueFrom": "arn:aws:secretsmanager:eu-west-1:765194364851:secret:/feature-poll/murrdev.com/app-secrets-v4-jAbBeN:SUPABASE_ANON_KEY::"
+                }
+            ],
+            "logConfiguration": {
+                "logDriver": "awslogs",
+                "options": {
+                    "awslogs-group": "/ecs/feature-poll-app",
+                    "awslogs-region": "eu-west-1",
+                    "awslogs-stream-prefix": "ecs"
+                }
+            },
+            "healthCheck": {
+                "command": [
+                    "CMD-SHELL",
+                    "wget -qO- http://localhost:3000/api/health || exit 1"
+                ],
+                "interval": 30,
+                "timeout": 5,
+                "retries": 3,
+                "startPeriod": 60
+            },
+            "systemControls": []
+        }
+    ],
+    "enableExecuteCommand": true,
+    "taskRoleArn": "arn:aws:iam::765194364851:role/feature-poll-ecs-task-execution-role",
+    "executionRoleArn": "arn:aws:iam::765194364851:role/feature-poll-ecs-task-execution-role",
+    "networkMode": "awsvpc",
+    "volumes": [],
+    "placementConstraints": [],
+    "requiresCompatibilities": [
+        "EC2"
+    ],
+    "cpu": "256",
+    "memory": "256"
+}
