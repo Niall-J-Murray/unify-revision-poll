@@ -228,6 +228,15 @@ resource "aws_security_group" "rds" {
     security_groups = [aws_security_group.ecs_task.id] # Allow from the ECS task SG
   }
 
+  # Allow inbound PostgreSQL traffic from Bastion host
+  ingress {
+    description     = "PostgreSQL from Bastion host"
+    from_port       = 5432
+    to_port         = 5432
+    protocol        = "tcp"
+    security_groups = [aws_security_group.bastion_host.id] # Allow from the Bastion SG
+  }
+
   # Typically no egress rules needed unless RDS needs to initiate connections (uncommon)
   # egress {
   #   from_port   = 0
@@ -255,8 +264,8 @@ resource "aws_security_group" "bastion_host" {
     from_port        = 22
     to_port          = 22
     protocol         = "tcp"
-    cidr_blocks      = ["37.228.207.138/32"]
-    ipv6_cidr_blocks = ["2a02:8084:41c0:1a00:a1d8:e8c4:31ad:d688/128"]
+    cidr_blocks      = ["37.228.206.81/32"]
+    ipv6_cidr_blocks = ["2a02:8084:4461:b880:d8fa:ccb2:403:955/128"]
   }
 
   # Allow all outbound traffic (needed for SSH replies, updates, reaching RDS)
