@@ -3,13 +3,13 @@
 import { useEffect } from "react";
 import Link from "next/link";
 
-export default function Error({
+export default function ErrorComponent({
   error,
   reset,
-}: {
+}: Readonly<{
   error: Error & { digest?: string };
   reset: () => void;
-}) {
+}>) {
   useEffect(() => {
     // Log the error to an error reporting service
     console.error(error);
@@ -34,11 +34,10 @@ export default function Error({
             />
           </svg>
         </div>
-        <h1 className="text-2xl font-bold mb-4">
-          Something went wrong
-        </h1>
+        <h1 className="text-2xl font-bold mb-4">Something went wrong</h1>
         <p className="text-github-secondary dark:text-github-dark-secondary mb-8">
-          We apologize for the inconvenience. Please try again or contact support if the problem persists.
+          We apologize for the inconvenience. Please try again or contact
+          support if the problem persists.
         </p>
         <div className="flex flex-col sm:flex-row space-y-3 sm:space-y-0 sm:space-x-3 justify-center">
           <button
@@ -57,4 +56,4 @@ export default function Error({
       </div>
     </div>
   );
-} 
+}

@@ -28,14 +28,6 @@
       },
       "environment": [
         {
-          "name": "DATABASE_URL",
-          "value": "postgresql://dbadmin:3Q0sZ0tuLTJotUlIV7q5KO9Ajt2bfoMIf3zW5SnDkC0=@feature-poll-db.c72euymwgjn7.eu-west-1.rds.amazonaws.com:5432/feature_poll"
-        },
-        {
-          "name": "DIRECT_URL",
-          "value": "postgresql://dbadmin:3Q0sZ0tuLTJotUlIV7q5KO9Ajt2bfoMIf3zW5SnDkC0=@feature-poll-db.c72euymwgjn7.eu-west-1.rds.amazonaws.com:5432/feature_poll"
-        },
-        {
           "name": "NEXT_PUBLIC_APP_URL",
           "value": "https://feature-poll.murrdev.com"
         },
@@ -50,6 +42,16 @@
         {
           "name": "NODE_ENV",
           "value": "production"
+        }
+      ],
+      "secrets": [
+        {
+          "name": "DATABASE_URL",
+          "valueFrom": "arn:aws:secretsmanager:<YOUR_REGION>:<YOUR_ACCOUNT_ID>:secret:<YOUR_SECRET_NAME_OR_ARN>:DATABASE_URL::"
+        },
+        {
+          "name": "DIRECT_URL",
+          "valueFrom": "arn:aws:secretsmanager:<YOUR_REGION>:<YOUR_ACCOUNT_ID>:secret:<YOUR_SECRET_NAME_OR_ARN>:DIRECT_URL::"
         }
       ],
       "healthCheck": {
