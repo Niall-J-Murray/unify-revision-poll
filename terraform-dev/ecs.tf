@@ -235,9 +235,9 @@ resource "aws_autoscaling_group" "ecs_asg" {
 
   # Use both public subnets across the two AZs for instance placement
   vpc_zone_identifier       = [aws_subnet.public_a.id, aws_subnet.public_b.id]
-  min_size                  = 1
-  max_size                  = 1 # Keep it at 1 instance as requested
-  desired_capacity          = 1
+  min_size                  = var.is_enabled ? 1 : 0
+  max_size                  = var.is_enabled ? 1 : 0 # Keep it at 1 instance when enabled
+  desired_capacity          = var.is_enabled ? 1 : 0
   health_check_type         = "EC2"
   health_check_grace_period = 300 # Allow time for instance and ECS agent to start
 
@@ -257,11 +257,15 @@ resource "aws_autoscaling_group" "ecs_asg" {
 
 # --- ECS Service ---
 resource "aws_ecs_service" "app" {
+  count = var.is_enabled ? 1 : 0 # Only create the service if enabled
+
   name            = "${var.subdomain_name}-app-service"
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.app.arn
-  desired_count   = 1
-  launch_type     = "EC2"
+  desired_count   = 1 # When the service exists (count=1), run 1 task
+
+  # Use EC2 launch type with the ASG
+  launch_type = "EC2"
 
   # Network configuration needed for awsvpc mode
   network_configuration {

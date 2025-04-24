@@ -102,4 +102,10 @@ variable "tags" {
     Project   = "FeaturePollApp"
     ManagedBy = "Terraform"
   }
+}
+
+variable "is_enabled" {
+  description = "Flag to enable (create/run) or disable (destroy/stop) costly resources like ECS service and ASG."
+  type        = bool
+  default     = true
 } 
