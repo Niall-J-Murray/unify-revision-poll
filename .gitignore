@@ -99,3 +99,5 @@ build/
 Thumbs.db
 # Sentry Config File
 .env.sentry-build-plugin
+# SpecStory explanation file
+.specstory/.what-is-this.md
